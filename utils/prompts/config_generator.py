@@ -16,7 +16,6 @@ fields, no trailing commas.
 
 ```
 {
-  "id": int,
   "models": [str],
   "baseline": {"strategy": str, "applicable": bool},
   "eval_matrics": [str],
@@ -29,8 +28,6 @@ fields, no trailing commas.
 ```
 
 ## Fields
-
-**id** — echo `run_id` from the input, else `1`.
 
 **models** — 4 to 6 candidates, best first, drawn only from:
 `logistic_regression`, `linear_regression`, `ridge`, `lasso`, `elastic_net`,
@@ -148,7 +145,6 @@ minority examples, one categorical with 180 levels, one numeric 24% missing.
 
 ```json
 {
-  "id": 1,
   "models": ["catboost", "logistic_regression", "random_forest", "knn"],
   "baseline": {"strategy": "most_frequent", "applicable": true},
   "eval_matrics": ["pr_auc", "balanced_accuracy", "f1", "recall"],

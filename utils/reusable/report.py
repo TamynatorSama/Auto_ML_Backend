@@ -42,10 +42,24 @@ from models import (
     ScoreRow,
     Warning,
 )
+from utils.reusable.leakage import read_exclusions
 from utils.reusable.metrics import METRIC_DIRECTION
 
 TOP_FEATURES = 15
 ERROR_BANDS = 5
+
+# rank groups: a result that may be selected always ranks above one that may not
+_GROUPS = {"clean": 0, "unverified": 1}
+
+
+def result_group(result: ModelResult, score: Optional[float]) -> int:
+    """0 clean with a score, 1 unverified with a score, 2 blocked, 3 failed, 4 unavailable."""
+    if result.eligibility == "blocked":
+        return 2
+    if score is not None and np.isfinite(score):
+        return _GROUPS.get(result.eligibility, 1)
+    # tried and failed still ranks above never tried at all
+    return 4 if result.status == "unavailable" else 3
 
 # phrases that mean a number should not be trusted, as opposed to a number that
 # is merely disappointing
@@ -66,6 +80,14 @@ CRITICAL_MARKS = (
 # rows and traces
 # ---------------------------------------------------------------------------
 
+def _cv(row: ScoreRow, metric: str) -> Optional[float]:
+    """The score models are selected on. The test set is scored once per finalist
+    to estimate how the chosen model generalises; choosing between models by it
+    would turn that estimate into one more thing the run was tuned to."""
+    value = row.cv_scores.get(metric)
+    return value if value is not None and np.isfinite(value) else None
+
+
 def _score(row: ScoreRow, metric: str) -> Optional[float]:
     value = row.test_scores.get(metric, row.cv_scores.get(metric))
     return value if value is not None and np.isfinite(value) else None
@@ -79,8 +101,8 @@ def _artifacts(record: Optional[AttemptRecord]) -> Dict[str, str]:
     if record is None or not record.script_path:
         return {}
     directory = Path(record.script_path).parent
-    found = {"script": str(directory / "script.py")}
-    for name in ("model.joblib", "oof_predictions.csv", "test_predictions.csv",
+    found = {"candidate": str(directory / "candidate.py")}
+    for name in ("contract.json", "model.joblib", "oof_predictions.csv", "test_predictions.csv",
                  "feature_importance.csv"):
         if (directory / name).exists():
             found[name.split(".")[0]] = str(directory / name)
@@ -89,6 +111,9 @@ def _artifacts(record: Optional[AttemptRecord]) -> Dict[str, str]:
 
 def _row(result: ModelResult) -> ScoreRow:
     generations = {r.generation for r in result.attempts if r.kind == "generate"}
+    note = result.error
+    if result.eligibility != "clean" and result.eligibility_note:
+        note = f"{result.eligibility}: {result.eligibility_note}" + (f"; {note}" if note else "")
     return ScoreRow(
         model=result.model,
         status=result.status,
@@ -96,11 +121,13 @@ def _row(result: ModelResult) -> ScoreRow:
         cv_scores=result.best_cv_scores,
         generations=len(generations),
         repairs=sum(1 for r in result.attempts if r.kind == "repair"),
-        executions=len(result.attempts),
+        # a leak check that ran nothing is a verdict, not an execution
+        executions=sum(1 for r in result.attempts if r.status != "skipped"),
         best_attempt=result.best_attempt,
         wall_seconds=round(sum(r.wall_seconds or 0.0 for r in result.attempts), 1),
         artifacts=_artifacts(_winner_record(result)),
-        note=result.error,
+        note=note,
+        eligibility=result.eligibility,
     )
 
 
@@ -255,6 +282,12 @@ def _warnings(results: List[ModelResult]) -> List[Warning]:
 
         if result.error and result.error not in seen:
             flags.append(_flag(result.model, "run", result.error))
+
+        if result.eligibility != "clean" and result.eligibility_note:
+            flags.append(Warning(
+                model=result.model, severity="critical", stage="selection",
+                message=f"{result.eligibility}: {result.eligibility_note}",
+            ))
     return flags
 
 
@@ -280,15 +313,18 @@ def _reason(selected: Optional[ScoreRow], scored: List[ScoreRow], context: RunCo
         return "no model produced a usable score"
 
     metric = context.primary_metric
-    top = _score(selected, metric)
-    parts = [f"best {metric} of {top:.4g} on the held-out test set"]
+    top = _cv(selected, metric)
+    parts = [f"best cross-validated {metric} of {top:.4g} among selectable models"]
+    test = selected.test_scores.get(metric)
+    if test is not None:
+        parts.append(f"{metric} {test:.4g} on the held-out test set")
 
     if len(scored) > 1:
         runner_up = scored[1]
-        second = _score(runner_up, metric)
+        second = _cv(runner_up, metric)
         if second:
             gap = abs(second - top) / abs(second)
-            parts.append(f"{gap * 100:.1f}% ahead of {runner_up.model} ({second:.4g})")
+            parts.append(f"{gap * 100:.1f}% ahead of {runner_up.model} in cross-validation ({second:.4g})")
 
     floor = context.baseline.cv_scores.get(metric)
     if floor and top:
@@ -304,19 +340,24 @@ def build_report(results: List[ModelResult], context: RunContext) -> RunReport:
     metric = context.primary_metric
     lower_is_better = context.metric_direction == "lower"
 
+    by_model = {result.model: result for result in results}
     rows = [_row(result) for result in results]
     ranked = sorted(
         rows,
         key=lambda row: (
-            0 if _score(row, metric) is not None else (2 if row.status == "unavailable" else 1),
-            (_score(row, metric) or 0.0) * (1 if lower_is_better else -1),
+            result_group(by_model[row.model], _cv(row, metric)),
+            (_cv(row, metric) or 0.0) * (1 if lower_is_better else -1),
             row.model,
         ),
     )
     for position, row in enumerate(ranked, start=1):
         row.rank = position
 
-    scored = [row for row in ranked if _score(row, metric) is not None]
+    # only a selectable result can be selected, however it scored
+    scored = [
+        row for row in ranked
+        if _cv(row, metric) is not None and row.eligibility != "blocked"
+    ]
     selected = scored[0] if scored else None
     if selected is not None:
         selected.selected = True
@@ -397,6 +438,11 @@ def build_report(results: List[ModelResult], context: RunContext) -> RunReport:
         trace={result.model: _trace(result, context) for result in results},
         importance=_importance(winner_record),
         warnings=_warnings(results),
+        exclusions=[
+            {"column": column, **evidence}
+            for column, evidence in read_exclusions(context.run_dir).items()
+        ],
+        leakage_screen=list(context.leakage_screen),
     )
 
     if context.task_type == "regression":

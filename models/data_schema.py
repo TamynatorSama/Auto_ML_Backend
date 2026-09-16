@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from enum import Enum
-from typing import List
+from typing import List, Optional
 
 
 
@@ -19,6 +19,12 @@ class DataColumn(BaseModel):
     data_type: DataType
     description: str
     is_target: bool = False
+    # whether this value is known at the moment a prediction is made. Only a
+    # person can say: `units` is a leak when predicting revenue after the fact
+    # and a legitimate input when pricing an order. None means not declared,
+    # and a column the run finds reconstructing the target is then handled by
+    # the run's leakage policy.
+    available_at_prediction: Optional[bool] = None
 
 class DataSchema(BaseModel):
     name: str

@@ -12,14 +12,18 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, START, StateGraph
 
+from automl_runtime.reference import REFERENCE_CANDIDATE
 from models import AttemptRecord, ModelResult, RunContext
 from code_gen_eval.patching import EditError, resolve_reply
-from code_gen_eval.runner import RESULT_SENTINEL, attempt_dir, run_script
+from code_gen_eval.runner import attempt_dir, run_candidate
 from utils.prompts.code_gen_prompt import code_gen_prompt
 from utils.prompts.code_fixer import code_fixer_prompt
 from utils.prompts.code_judge import code_judge_prompt
+from utils.reusable.eligibility import TIER_NAMES, assess, ranked_eligible, replay
+from utils.reusable.guards import check_final
+from utils.reusable.leakage import add_exclusions, columns_to_ablate, judge_ablation, read_exclusions
+from utils.reusable.lessons import error_signature, read_lessons, record_lesson, render_lessons
 from utils.reusable.llm import message_text
-from utils.reusable.metrics import is_improvement
 from utils.reusable.requirements import render_requirements, requirements_for
 
 load_dotenv()
@@ -28,19 +32,28 @@ DEPENDENCY_RETRY_LIMIT = 1      # a missing package is not fixable by rewriting
 FINAL_EVAL_CANDIDATES = 2       # winner, then runner-up, if the winner cannot be scored
 MAX_REPAIRS = 2                 # repair rounds allowed per modelling attempt
 
+
+def execution_cap(context: RunContext) -> int:
+    """Candidate runs one model may use in total, repairs included.
+
+    Repairs do not spend modelling attempts, so without a cap a model that never
+    scores can run max_tries x (1 + MAX_REPAIRS) times.
+    """
+    return 2 * context.max_tries + 1
+
 # statuses the fixer can do something about: the script is mechanically wrong.
 # A clean timeout is not here on purpose — nothing is broken, the configuration
 # is too expensive, and cutting its cost is a modelling decision for the judge.
 # A run that raised and then hung comes back as "error", not "timeout".
 BROKEN = ("error", "syntax_error")
 
-# what every script has to contain to be worth running; checked before an
+# what every candidate has to contain to be worth evaluating; checked before an
 # attempt is spent, and explained to the model in these words when it is not
-SCRIPT_CONTRACT = {
-    RESULT_SENTINEL: (
-        "the runner reads the scores from the JSON printed after this line, so a "
-        "script without it cannot be scored. A reply that stops after the header "
-        "or says the rest is unchanged is not a complete script."
+CANDIDATE_CONTRACT = {
+    "def build_pipeline": (
+        "the harness calls build_pipeline(columns, task, ctx) and cross-validates the "
+        "estimator it returns, so a module without it cannot be evaluated. A reply that "
+        "stops after the header or says the rest is unchanged is not a complete module."
     ),
 }
 
@@ -62,31 +75,85 @@ class CodeGenSubgraphState(TypedDict, total=False):
     best_score: Optional[float]
     patience: int
     dependency_retries: int
+    extension_used: bool  # the one extra generation granted after a leak removed every usable attempt
     judge_notes: str
     status: str
     result: ModelResult
+
+
+def _latest(attempts: List[AttemptRecord]) -> Optional[AttemptRecord]:
+    """The newest modelling attempt; leak checks are measurements, not attempts."""
+    return next((a for a in reversed(attempts) if a.kind != "ablation"), None)
+
+
+def _executions(attempts: List[AttemptRecord]) -> int:
+    """Candidate runs spent on modelling and repair; leak checks are the harness's, not the model's."""
+    return sum(1 for a in attempts if a.kind != "ablation" and a.status != "skipped")
+
+
+def _stuck(record: AttemptRecord, attempts: List[AttemptRecord]) -> bool:
+    """The last repair reproduced the error it was meant to fix, word for word."""
+    signature = error_signature(record)
+    if signature is None:
+        return False
+    earlier = [
+        a for a in attempts
+        if a.kind != "ablation" and a.attempt < record.attempt and a.generation == record.generation
+    ]
+    return bool(earlier) and error_signature(earlier[-1]) == signature
+
+
+def _leak_checks(record: AttemptRecord, attempts: List[AttemptRecord]) -> List[AttemptRecord]:
+    subject = record.cached_from or record.attempt
+    return [a for a in attempts if a.kind == "ablation" and a.ablation_of == subject and a.verdict]
 
 
 def _llm():
     return ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2)
 
 
-def _describe_attempt(record: AttemptRecord, context: RunContext) -> str:
+def _libraries(context: RunContext) -> str:
+    """Installed libraries WITH versions: code written for an older API is the
+    most common avoidable failure, and a name alone does not say which API."""
+    installed = ", ".join(f"{name} {version}" for name, version in sorted(context.environment.items()))
+    return f"{installed}, automl_runtime" if installed else "automl_runtime"
+
+
+def _describe_attempt(
+    record: AttemptRecord, context: RunContext, attempts: Optional[List[AttemptRecord]] = None
+) -> str:
     """What one attempt did, as the next generator or the judge needs to read it."""
     lines = [f"attempt {record.attempt}: {record.status}"]
     if record.changes:
         lines.append(f"changes: {record.changes}")
     if record.cv_scores:
-        lines.append("cv: " + ", ".join(f"{k} {v:.4f}" for k, v in record.cv_scores.items()))
+        lines.append(
+            "cv (computed by the harness): "
+            + ", ".join(f"{k} {v:.4f}" for k, v in record.cv_scores.items())
+        )
+    folds = [value for value in record.fold_scores if value is not None]
+    if len(folds) > 1:
+        lines.append(f"{context.primary_metric} by fold: " + ", ".join(f"{value:.4f}" for value in folds))
     if record.wall_seconds is not None:
         lines.append(f"took {record.wall_seconds}s of a {context.time_budget_seconds}s budget")
     for warning in record.warnings:
         lines.append(f"WARNING: {warning}")
+    for check in _leak_checks(record, attempts or []):
+        lines.append(f"LEAK CHECK ({check.verdict}): {check.decision}")
     if record.traceback:
         lines.append(f"traceback:\n{record.traceback[-1500:]}")
     elif record.stdout:
         lines.append(f"stdout tail:\n{record.stdout[-800:]}")
     return "\n".join(lines)
+
+
+def _removed_columns(context: RunContext) -> str:
+    """Columns the candidate will not receive, and why, so it never names them."""
+    lines = [f"- {column}: dropped by the profile" for column in context.drop_columns]
+    for column, evidence in read_exclusions(context.run_dir).items():
+        if column not in context.drop_columns:
+            lines.append(f"- {column}: {evidence.get('reason', 'excluded by a leak check')}")
+    return "\n".join(lines) or "none"
 
 
 def _brief(context: RunContext, model: str) -> str:
@@ -102,11 +169,18 @@ def _brief(context: RunContext, model: str) -> str:
         f"metrics: {', '.join(context.eval_matrics)} (first is primary, "
         f"{context.metric_direction} is better)\n"
         f"baseline to beat ({baseline.strategy}): {floor}\n"
-        f"libraries available: {', '.join(sorted(context.environment))}\n\n"
+        f"libraries available: {_libraries(context)}\n\n"
+        f"## COLUMNS REMOVED FROM THIS RUN\n{_removed_columns(context)}\n\n"
+        f"{_pitfalls(context)}"
         f"## REQUIRED PREPROCESSING FOR {model}\n"
         f"{render_requirements(requirements_for(context.preprocessing_requirements, model))}\n\n"
         f"{context.summary}"
     )
+
+
+def _pitfalls(context: RunContext) -> str:
+    rendered = render_lessons(read_lessons(context.run_dir))
+    return f"{rendered}\n\n" if rendered else ""
 
 
 def generate_code(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
@@ -118,23 +192,24 @@ def generate_code(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
     # search/replace cannot reliably repair a file that does not parse: the
     # anchors sit inside the broken region, so the same error comes straight
     # back and the attempt is spent for nothing
-    broken = bool(history) and history[-1].status == "syntax_error"
+    last = _latest(history)
+    broken = last is not None and last.status == "syntax_error"
 
     if not current_code or broken:
-        problem = f"\n\n## WHAT WENT WRONG\n{history[-1].traceback}" if broken else ""
-        reference = f"\n\n## LAST SCRIPT (did not parse)\n{current_code}" if broken else ""
+        problem = f"\n\n## WHAT WENT WRONG\n{last.traceback}" if broken else ""
+        reference = f"\n\n## LAST CANDIDATE (did not parse)\n{current_code}" if broken else ""
         human = (
             f"{_brief(context, model)}{problem}{reference}\n\n"
-            "Reply with MODE: REWRITE and a complete script."
+            "Reply with MODE: REWRITE and a complete candidate module."
         )
     else:
-        last = history[-1]
+        generation = state.get("generation", 0) + 1
         human = (
             f"{_brief(context, model)}\n\n"
-            f"## PREVIOUS ATTEMPT\n{_describe_attempt(last, context)}\n\n"
+            f"## PREVIOUS ATTEMPT\n{_describe_attempt(last, context, history)}\n\n"
             f"## JUDGE\n{state.get('judge_notes', 'no notes')}\n\n"
             f"## CURRENT CODE\n{current_code}\n\n"
-            f"This is attempt {attempt} of {context.max_tries}. Reply with MODE: EDIT and "
+            f"This is generation {generation} of {context.max_tries}. Reply with MODE: EDIT and "
             f"search/replace blocks against CURRENT CODE."
         )
 
@@ -165,7 +240,7 @@ def _ask_for_code(human: str, current_code: str) -> tuple:
     for correction in range(2):
         response = model.invoke(messages)
         try:
-            reply = resolve_reply(message_text(response), current_code, SCRIPT_CONTRACT)
+            reply = resolve_reply(message_text(response), current_code, CANDIDATE_CONTRACT)
             return reply.code, reply.changes
         except EditError as error:
             if correction == 1:
@@ -175,15 +250,22 @@ def _ask_for_code(human: str, current_code: str) -> tuple:
     response = model.invoke(
         [
             SystemMessage(content=code_gen_prompt),
-            HumanMessage(content=f"{human}\n\nReply with MODE: REWRITE and a complete script."),
+            HumanMessage(content=f"{human}\n\nReply with MODE: REWRITE and a complete candidate module."),
         ]
     )
     try:
-        reply = resolve_reply(message_text(response), "", SCRIPT_CONTRACT)
+        # the model is asked for a rewrite but often answers with edits again;
+        # accept those against the current module rather than discard them
+        reply = resolve_reply(message_text(response), current_code, CANDIDATE_CONTRACT)
     except EditError as error:
-        # run_code records an attempt with no script rather than raising, so
+        if current_code:
+            # keep the working module: re-evaluating identical code is a cache
+            # hit that costs nothing, while an empty module spends an attempt
+            # and hands the fixer nothing to fix
+            return current_code, f"the generator's reply could not be applied ({str(error)[:160]}); module unchanged"
+        # run_code records an attempt with no candidate rather than raising, so
         # the worker survives and the reason lands in the record
-        return "", f"the generator returned no usable script: {error}"
+        return "", f"the generator returned no usable candidate: {error}"
     return reply.code, reply.changes
 
 
@@ -203,7 +285,7 @@ def run_code(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
             attempt=state["attempt"],
             generation=state.get("generation", 1),
             kind="repair" if state.get("repairs", 0) else "generate",
-            script_path=str(out_dir / "script.py"),
+            script_path=str(out_dir / "candidate.py"),
             status="error",
             changes=state.get("changes", ""),
             traceback=reason,
@@ -212,18 +294,29 @@ def run_code(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
         print(f"[{state['model']}] attempt {record.attempt}: {record.status} (no script) — {reason}")
         return {"attempts": [record]}
 
-    record = run_script(
+    record = run_candidate(
         state["current_code"],
         state["model"],
         state["attempt"],
         context,
         backend=context.backend,
         changes=state.get("changes", ""),
-        prior_attempts=[r.attempt for r in state.get("attempts", [])],
+        prior_attempts=[r.attempt for r in state.get("attempts", []) if r.kind != "ablation"],
         generation=state.get("generation", 1),
         kind="repair" if state.get("repairs", 0) else "generate",
+        # columns excluded by any worker's leak check so far
+        extra_excluded=list(read_exclusions(context.run_dir)),
     )
     print(f"[{state['model']}] attempt {record.attempt}: {record.status} {record.cv_scores}")
+
+    # an attempt that cleared the stage the previous one failed at, whether a
+    # repair or a new generation after repairs ran out, is a fix every worker
+    # should know
+    failed = _latest(state.get("attempts", []))
+    if failed is not None and failed.status in BROKEN:
+        lesson = record_lesson(context.run_dir, state["model"], failed, record)
+        if lesson:
+            print(f"[{state['model']}] lesson: {lesson['signature'][:100]} -> {lesson['fix'][:80]}")
     return {"attempts": [record]}
 
 
@@ -236,6 +329,24 @@ def fix_code(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
     """
     context, model = state["context"], state["model"]
     record = state["attempts"][-1]
+
+    if not state.get("current_code", "").strip():
+        # nothing to repair: no module was produced. A fixer writing from
+        # nothing cannot see the brief and guesses the interface, so the
+        # generator, which has it, writes the module instead
+        human = (
+            f"{_brief(context, model)}\n\n"
+            f"## WHAT WENT WRONG\n{record.traceback}\n\n"
+            "Reply with MODE: REWRITE and a complete candidate module."
+        )
+        code, changes = _ask_for_code(human, "")
+        print(f"[{model}] repair {state.get('repairs', 0) + 1}: regenerated from the brief")
+        return {
+            "attempt": state["attempt"] + 1,
+            "repairs": state.get("repairs", 0) + 1,
+            "current_code": code,
+            "changes": f"repair: {changes}",
+        }
 
     # what has already been tried on this same script. Without it the fixer
     # re-proposed a repair that had just failed, because all it could see was
@@ -257,9 +368,10 @@ def fix_code(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
 
     human = (
         f"model: {model}\n"
-        f"libraries available: {', '.join(sorted(context.environment))}\n\n"
+        f"libraries available: {_libraries(context)}\n\n"
+        f"{_pitfalls(context)}"
         f"## WHAT HAPPENED\n{_describe_attempt(record, context)}{already}\n\n"
-        f"## SCRIPT\n{state['current_code']}"
+        f"## CANDIDATE\n{state['current_code']}"
     )
 
     llm = _llm()
@@ -268,7 +380,7 @@ def fix_code(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
     for correction in range(2):
         response = llm.invoke(messages)
         try:
-            reply = resolve_reply(message_text(response), state["current_code"], SCRIPT_CONTRACT)
+            reply = resolve_reply(message_text(response), state["current_code"], CANDIDATE_CONTRACT)
             print(f"[{model}] repair {state.get('repairs', 0) + 1}: {reply.changes[:90]}")
             return {
                 "attempt": state["attempt"] + 1,
@@ -293,27 +405,151 @@ def fix_code(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
 
 
 def route_after_run(state: CodeGenSubgraphState) -> str:
-    """A broken script goes to the fixer; a scored one goes to the judge."""
+    """A broken candidate goes to the fixer, a suspiciously good one to a leak
+    check, and a scored one to the judge."""
     record = state["attempts"][-1]
-    if record.status in BROKEN and state.get("repairs", 0) < MAX_REPAIRS:
+    attempts = state["attempts"]
+    if (
+        record.status in BROKEN
+        and state.get("repairs", 0) < MAX_REPAIRS
+        # a repair that changed nothing about the error will not fix it on a second go
+        and not _stuck(record, attempts)
+        and _executions(attempts) < execution_cap(state["context"])
+    ):
         return "fix_code"
+    suspicious = any(finding.kind == "suspect_leakage" for finding in record.findings)
+    if record.status in ("ok", "cached") and suspicious and not _leak_checks(record, state["attempts"]):
+        return "verify"
     return "judge"
+
+
+def verify(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
+    """Settle a suspiciously good attempt with a measurement, not an opinion.
+
+    Re-run the same candidate on the same folds without the columns carrying most
+    of its importance. When it cannot run without them, make the comparison with
+    the harness's reference model instead. The leak is confirmed when most of the
+    gain over the baseline disappears; the verdict is recorded on the last
+    measurement, and a confirmed leak on columns the schema does not declare
+    available is excluded for every model under the default policy.
+    """
+    context, model = state["context"], state["model"]
+    attempts = state["attempts"]
+    record = _latest(attempts)
+    metric = context.primary_metric
+    floor = context.baseline.cv_scores.get(metric) if context.baseline.applicable else None
+    attempt = state["attempt"]
+    excluded_so_far = list(read_exclusions(context.run_dir))
+
+    suspects = columns_to_ablate(Path(record.script_path).parent)
+    declared = [column for column in suspects if column in context.available_at_prediction]
+    columns = [column for column in suspects if column not in declared]
+    measurements: List[AttemptRecord] = []
+
+    def measure(code: str, extra: List[str], label: str) -> AttemptRecord:
+        nonlocal attempt
+        attempt += 1
+        measured = run_candidate(
+            code, model, attempt, context, backend=context.backend, changes=label,
+            generation=record.generation, kind="ablation", extra_excluded=extra,
+            ablation_of=record.cached_from or record.attempt,
+        )
+        measurements.append(measured)
+        return measured
+
+    if not suspects or not columns:
+        verdict = "declared_available" if declared else "unresolved"
+        decision = (
+            f"its score depends most on {', '.join(declared)}, which the schema declares known at "
+            "prediction time, so they are legitimate inputs"
+            if declared
+            else "no feature importance to choose columns from, so the suspicion stands unverified"
+        )
+        full = ablated = retained = None
+    else:
+        source = "the candidate"
+        full = record.cv_scores.get(metric)
+        without = measure(
+            state["current_code"], [*excluded_so_far, *columns],
+            f"leak check: attempt {record.attempt} without {', '.join(columns)}",
+        )
+        ablated = without.cv_scores.get(metric) if without.status == "ok" else None
+
+        if ablated is None:
+            # the candidate names those columns and cannot run without them
+            source = "the reference model"
+            with_all = measure(REFERENCE_CANDIDATE, excluded_so_far, "leak check: reference model, all columns")
+            without = measure(
+                REFERENCE_CANDIDATE, [*excluded_so_far, *columns],
+                f"leak check: reference model without {', '.join(columns)}",
+            )
+            full = with_all.cv_scores.get(metric) if with_all.status == "ok" else None
+            ablated = without.cv_scores.get(metric) if without.status == "ok" else None
+
+        confirmed, retained = judge_ablation(full, ablated, floor, context.metric_direction)
+        named = ", ".join(columns)
+        if confirmed is None:
+            verdict = "unresolved"
+            decision = f"the comparison without {named} could not be measured, so the suspicion stands unverified"
+        else:
+            shift = f"{metric} {full:.4g} -> {ablated:.4g}"
+            if not confirmed:
+                verdict = "cleared"
+                decision = f"without {named}, {source} kept {retained:.0%} of its gain over the baseline ({shift}); not a leak"
+            elif context.leakage_policy == "exclude":
+                verdict = "confirmed"
+                decision = (
+                    f"without {named}, {source} kept only {retained:.0%} of its gain over the baseline "
+                    f"({shift}); leak confirmed, so {named} are excluded from the run"
+                )
+                add_exclusions(context.run_dir, columns, {
+                    "reason": f"leak confirmed by {model} attempt {record.attempt}: {decision}",
+                    "found_by": model,
+                    "attempt": record.attempt,
+                    "metric": metric,
+                    "score_with": full,
+                    "score_without": ablated,
+                    "retained_gain": retained,
+                    "measured_with": source,
+                })
+            else:
+                verdict = "kept_by_policy"
+                decision = (
+                    f"without {named}, {source} kept only {retained:.0%} of its gain ({shift}); a leak by the "
+                    "numbers, but the run's leakage policy keeps them"
+                )
+
+    if not measurements:
+        # nothing was run, but the verdict still needs a record the rules can find
+        measurements.append(AttemptRecord(
+            model=model, attempt=record.attempt, generation=record.generation, kind="ablation",
+            script_path=record.script_path, status="skipped", ablation_of=record.cached_from or record.attempt,
+        ))
+    check = measurements[-1]
+    check.verdict, check.decision, check.ablated_columns = verdict, decision, columns
+    if check.status != "skipped":
+        (Path(check.script_path).parent / "record.json").write_text(check.model_dump_json(indent=2), encoding="utf-8")
+
+    print(f"[{model}] leak check ({verdict}): {decision}")
+    return {"attempt": attempt, "attempts": measurements}
 
 
 def judge(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
     context = state["context"]
-    record = state["attempts"][-1]
+    attempts = state["attempts"]
+    record = _latest(attempts)
 
     # a traceback, a timeout or a missing package is its own instruction; the
     # generator is already told to fix exactly that, so this saves an LLM call
     if record.status != "ok":
         return {"judge_notes": f"the attempt did not produce a score ({record.status}); fix that first"}
 
-    history = "\n\n".join(_describe_attempt(r, context) for r in state["attempts"][:-1])
+    earlier = [a for a in attempts if a.kind != "ablation" and a.attempt != record.attempt]
+    history = "\n\n".join(_describe_attempt(r, context, attempts) for r in earlier)
     human = (
         f"{_brief(context, state['model'])}\n\n"
-        f"## THIS ATTEMPT\n{_describe_attempt(record, context)}\n\n"
-        f"## CODE\n{state['current_code']}\n\n"
+        f"## THIS ATTEMPT\n{_describe_attempt(record, context, attempts)}\n\n"
+        f"## CANDIDATE\n{state['current_code']}\n\n"
         f"## EARLIER ATTEMPTS\n{history or 'none'}"
     )
 
@@ -326,12 +562,17 @@ def judge(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
 
 
 def decide(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
-    """Deterministic. No LLM decides whether a model keeps going."""
+    """Deterministic. No LLM decides whether a model keeps going.
+
+    The best attempt and the patience count are replayed from the whole history
+    against current eligibility, so an attempt blocked after the fact (a leak
+    confirmed here or by another worker) stops counting, and the honest attempt
+    that replaced it is judged on its own terms instead of against a score it
+    was never supposed to match.
+    """
     context = state["context"]
-    record = state["attempts"][-1]
-    metric = context.improvement_metric
-    best_score = state.get("best_score")
-    best_attempt = state.get("best_attempt")
+    attempts = state.get("attempts", [])
+    record = _latest(attempts)
     patience = state.get("patience", 0)
     dependency_retries = state.get("dependency_retries", 0)
 
@@ -351,23 +592,24 @@ def decide(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
             "patience": patience,
         }
 
-    # errors and timeouts spend an attempt but are not score stagnation, so
-    # patience is left alone for them: a traceback is a mechanical failure the
-    # next attempt can fix
-    score = record.cv_scores.get(metric)
-    if score is None:
-        pass
-    elif best_score is None or is_improvement(
-        best_score, score, metric, context.improvement_delta, context.improvement_mode
-    ):
-        best_score, best_attempt, patience = score, record.attempt, 0
-    else:
-        # a cached attempt lands here too: identical code is a no-op, and
-        # without counting it the loop can spin
-        patience += 1
+    # errors, timeouts and blocked attempts leave patience alone: they are
+    # mechanical or validity failures the next attempt can fix, not stagnation.
+    # A cached attempt counts: identical code is a no-op, and the loop can spin.
+    exclusions = read_exclusions(context.run_dir)
+    best_attempt, best_score, patience = replay(attempts, context, exclusions)
+    extension_used = state.get("extension_used", False)
 
-    if state.get("generation", 1) >= context.max_tries:
-        status = "max_tries"
+    if _executions(attempts) >= execution_cap(context):
+        status = "execution_cap"
+        print(f"[{state['model']}] stopped at {_executions(attempts)} candidate runs (cap {execution_cap(context)})")
+    elif state.get("generation", 1) >= context.max_tries:
+        if best_attempt is None and exclusions and not extension_used:
+            # every attempt that scored used a column excluded since; one more
+            # generation builds without it rather than ending with nothing
+            status, extension_used = "running", True
+            print(f"[{state['model']}] every scored attempt used an excluded column; one more generation")
+        else:
+            status = "max_tries"
     elif patience >= context.early_stopping_patience:
         status = "no_improvement"
     else:
@@ -379,6 +621,7 @@ def decide(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
         "patience": patience,
         "status": status,
         "dependency_retries": dependency_retries,
+        "extension_used": extension_used,
     }
 
 
@@ -390,37 +633,42 @@ def final_eval(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
     """Score the winning attempt on the test set, once, after the loop is over."""
     context, model = state["context"], state["model"]
     attempts = state.get("attempts", [])
-    best_attempt = state.get("best_attempt")
+    # read again here: another worker may have excluded a column since decide ran
+    exclusions = read_exclusions(context.run_dir)
+    ranked = ranked_eligible(attempts, context, exclusions)
 
-    if best_attempt is None:
-        last = attempts[-1] if attempts else None
+    if not ranked:
         status = "unavailable" if state.get("status") == "unavailable" else "failed"
-        return {
-            "result": ModelResult(
-                model=model,
-                status=status,
-                attempts=attempts,
-                error=last.traceback[:1000] if last else "no attempt ran",
+        blocked = [
+            (record, assess(record, attempts, exclusions)[1])
+            for record in attempts
+            if record.kind != "ablation" and record.status in ("ok", "cached") and record.cv_scores
+        ]
+        if blocked:
+            error = "every scored attempt was blocked: " + "; ".join(
+                f"attempt {record.attempt}: {reason}" for record, reason in blocked[:3]
             )
-        }
+            return {"result": ModelResult(
+                model=model, status=status, attempts=attempts, error=error[:1000],
+                eligibility="blocked", eligibility_note=blocked[0][1],
+            )}
+        last = _latest(attempts)
+        return {"result": ModelResult(
+            model=model, status=status, attempts=attempts,
+            error=last.traceback[:1000] if last else "no attempt ran",
+        )}
 
-    # best first, then the next best. The final branch of a script never runs
-    # during the loop, so a typo in it is only discovered here — and losing a
-    # model that cross-validated perfectly well over one unreached line is a
-    # worse answer than scoring its runner-up.
-    metric = context.improvement_metric
-    ranked = sorted(
-        (r for r in attempts if r.cv_scores.get(metric) is not None and r.script_path),
-        key=lambda r: r.cv_scores[metric] * (-1 if context.metric_direction == "higher" else 1),
-    )[:FINAL_EVAL_CANDIDATES]
-
+    # the best selectable attempt first, then the next. Final mode fits on every
+    # training row and predicts the test file, which the loop never does, so a
+    # failure only shows up here, and scoring the runner-up beats losing the model
     notes = []
-    for candidate in ranked:
+    for tier, candidate in ranked[:FINAL_EVAL_CANDIDATES]:
         code = Path(candidate.script_path).read_text(encoding="utf-8")
-        scored = run_script(
+        scored = run_candidate(
             code, model, candidate.attempt, context,
             backend=context.backend, final=True, changes=candidate.changes,
             generation=candidate.generation, kind=candidate.kind,
+            extra_excluded=candidate.excluded_columns,
         )
         print(f"[{model}] final: attempt {candidate.attempt} {scored.status} | "
               f"cv {candidate.cv_scores} -> test {scored.test_scores}")
@@ -436,27 +684,30 @@ def final_eval(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
                     best_attempt=candidate.attempt,
                     best_cv_scores=candidate.cv_scores,
                     test_scores=scored.test_scores,
-                    test_warnings=scored.warnings,
+                    test_warnings=scored.warnings + check_final(candidate, scored, context),
                     error="; ".join(notes),
+                    eligibility=TIER_NAMES[tier],
+                    eligibility_note=assess(candidate, attempts, exclusions)[1],
                 )
             }
 
         note = (
             f"attempt {candidate.attempt} could not be scored on the test set ({scored.status}): "
-            f"{(scored.traceback or 'no AUTOML_FINAL branch in the script')[:400]}"
+            f"{(scored.traceback or 'no test scores were produced')[:400]}"
         )
         print(f"[{model}] {note}")
         notes.append(note)
 
-    winner = next(r for r in attempts if r.attempt == best_attempt)
+    tier, winner = ranked[0]
     return {
         "result": ModelResult(
             model=model,
             status=state.get("status", "max_tries"),
             attempts=attempts,
-            best_attempt=best_attempt,
+            best_attempt=winner.attempt,
             best_cv_scores=winner.cv_scores,
             error="; ".join(notes) or "no attempt could be scored on the test set",
+            eligibility=TIER_NAMES[tier],
         )
     }
 
@@ -465,14 +716,16 @@ graph = StateGraph(CodeGenSubgraphState)
 graph.add_node("generate_code", generate_code)
 graph.add_node("run_code", run_code)
 graph.add_node("fix_code", fix_code)
+graph.add_node("verify", verify)
 graph.add_node("judge", judge)
 graph.add_node("decide", decide)
 graph.add_node("final_eval", final_eval)
 
 graph.add_edge(START, "generate_code")
 graph.add_edge("generate_code", "run_code")
-graph.add_conditional_edges("run_code", route_after_run, ["fix_code", "judge"])
+graph.add_conditional_edges("run_code", route_after_run, ["fix_code", "verify", "judge"])
 graph.add_edge("fix_code", "run_code")
+graph.add_edge("verify", "judge")
 graph.add_edge("judge", "decide")
 graph.add_conditional_edges("decide", route, ["generate_code", "final_eval"])
 graph.add_edge("final_eval", END)

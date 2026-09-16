@@ -1,11 +1,12 @@
 """Run the AutoML agent over every dataset in try_out_data/.
 
-The two subgraphs are invoked separately rather than through `main.app` for one
-reason: the config generator echoes `id` 1 for every run, and `run_dir` is
-`runs/<id>`, so four runs through the combined graph would write four models'
-scripts, pickles and reports into the same directory. The context is re-stamped
-with a per-dataset run id and directory between the two phases; nothing else
-about the flow changes.
+    python try_out_runner.py [slug ...]
+
+The two subgraphs are invoked separately rather than through `main.app` so the
+context, profile and report of each run can be written out between them. Each
+run is placed explicitly (run id and directory), and AUTOML_RUN_PREFIX puts a
+new run beside an earlier one instead of over it, so before-and-after runs of
+the same dataset can be compared.
 """
 
 import json
@@ -18,6 +19,7 @@ from pathlib import Path
 from models import DataColumn, DataSchema, DataType
 from information_agent.base import app as information_app
 from code_gen_eval.base import app as code_gen_eval_app
+from code_gen_eval.resume import load_run
 
 NUM = DataType.NUMERIC
 CAT = DataType.CATEGORICAL
@@ -256,33 +258,34 @@ RUNS = [
 
 
 def execute(spec: dict) -> dict:
-    run_dir = Path("runs") / spec["slug"]
+    run_dir = Path("runs") / f"{os.environ.get('AUTOML_RUN_PREFIX', '')}{spec['slug']}"
     started = time.time()
 
-    print(f"\n{'=' * 78}\n>>> {spec['slug']}: {spec['topic']}\n{'=' * 78}", flush=True)
+    print(f"\n{'=' * 78}\n>>> {spec['slug']}: {spec['topic']} -> {run_dir}\n{'=' * 78}", flush=True)
 
-    information = information_app.invoke(
-        {"data_path": spec["data_path"], "schema": spec["schema"], "topic": spec["topic"]}
-    )
+    loaded = load_run(run_dir) if os.environ.get("AUTOML_RESUME") == "1" else None
+    if loaded is not None:
+        # planning is not repeated: the split, folds, config and exclusions are
+        # the ones the run started with, and finished models are read back
+        context, config = loaded
+        print(f"resuming {run_dir}: planning skipped", flush=True)
+    else:
+        information = information_app.invoke(
+            {
+                "data_path": spec["data_path"],
+                "schema": spec["schema"],
+                "topic": spec["topic"],
+                "run_id": spec["run_id"],
+                "run_dir": str(run_dir),
+            }
+        )
+        context, config = information["context"], information["config"]
+        (run_dir / "profile.md").write_text(context.summary, encoding="utf-8")
+        (run_dir / "profile_full.md").write_text(information["full_summary"], encoding="utf-8")
 
-    # the generator echoes id 1 for every dataset; without this the four runs
-    # share one directory and overwrite each other's scripts and models
-    context = information["context"].model_copy(
-        update={"run_id": spec["run_id"], "run_dir": str(run_dir)}
-    )
-    run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "context.json").write_text(
-        context.model_dump_json(indent=2), encoding="utf-8"
-    )
-    (run_dir / "profile.md").write_text(context.summary, encoding="utf-8")
-    (run_dir / "profile_full.md").write_text(information["full_summary"], encoding="utf-8")
-
-    # one worker is the safe setting on a large dataset when memory is tight:
-    # two workers on 306k training rows ran the machine out of memory
-    result = code_gen_eval_app.invoke(
-        {"topic": spec["topic"], "context": context, "config": information["config"]},
-        {"max_concurrency": int(os.environ.get("AUTOML_CONCURRENCY", "2"))},
-    )
+    # how many models train at once is planned by the run from the machine and
+    # the data; AUTOML_CONCURRENCY overrides it
+    result = code_gen_eval_app.invoke({"topic": spec["topic"], "context": context, "config": config})
 
     (run_dir / "report.md").write_text(result["report"], encoding="utf-8")
     elapsed = time.time() - started
@@ -317,7 +320,7 @@ if __name__ == "__main__":
             traceback.print_exc()
             summary.append({"slug": spec["slug"], "status": f"crashed: {error!r}"})
 
-        Path("runs/try_out_summary.json").write_text(
+        Path(f"runs/{os.environ.get('AUTOML_RUN_PREFIX', '')}try_out_summary.json").write_text(
             json.dumps(summary, indent=2), encoding="utf-8"
         )
 

@@ -4,7 +4,10 @@ from pathlib import Path
 # Allow imports from project root when running this file directly
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from typing import TypedDict, Annotated, Dict, List, Sequence, Tuple
+from datetime import datetime
+import hashlib
+import os
+from typing import TypedDict, Annotated, Any, Dict, List, Sequence, Tuple
 import json
 
 from langgraph.graph import StateGraph, START, END
@@ -24,10 +27,13 @@ from models import (
     RunContext,
     SplitPlan,
 )
+from automl_runtime.folds import build_folds, load_folds, save_folds
+from utils.reusable.leakage import add_exclusions, relation_screen, render_screen
 from utils.reusable.summary import profile_dataset, render_profile
 from utils.reusable.splitting import apply_split_plan, write_split
 from utils.reusable.baseline import run_baseline
 from utils.reusable.requirements import derive_requirements
+from utils.reusable.resources import plan_resources
 from utils.reusable.llm import message_text
 from utils.reusable.metrics import METRIC_DIRECTION
 from utils.reusable.environment import (
@@ -64,6 +70,17 @@ class InformationState(TypedDict):
     split_plan: SplitPlan
     baseline: BaselineResult
     context: RunContext
+    # set by the caller to place the run; otherwise assigned in prepare_run
+    run_id: int
+    run_dir: str
+    folds_path: str
+    columns: List[Dict[str, Any]]
+    leakage_policy: str   # exclude (default) | keep
+    leakage_screen: List[Dict[str, Any]]
+    # a hash of the data file, the schema and the planning prompts: identical
+    # inputs, identical fingerprint, so a cached plan can be reused
+    plan_fingerprint: str
+    reuse_plan: bool
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
 
@@ -102,6 +119,61 @@ def parse_json(text: str) -> dict:
     return payload
 
 
+PLANS_DIR = "_plans"
+
+
+def _fingerprint(data_path: str, schema: DataSchema) -> str:
+    digest = hashlib.sha256()
+    with open(data_path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    for text in (schema.model_dump_json(), split_planner_prompt, config_generator_prompt):
+        digest.update(text.encode("utf-8"))
+    return digest.hexdigest()[:16]
+
+
+def _plan_cache(state) -> Path:
+    return Path(state["run_dir"]).parent / PLANS_DIR / f"{state['plan_fingerprint']}.json"
+
+
+def _reuse_plan(state) -> bool:
+    return bool(state.get("reuse_plan")) or os.environ.get("AUTOML_REUSE_PLAN") == "1"
+
+
+def _cached(state, key: str):
+    path = _plan_cache(state)
+    if not _reuse_plan(state) or not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8")).get(key)
+    except (ValueError, OSError):
+        return None
+
+
+def _remember(state, key: str, value: dict) -> None:
+    path = _plan_cache(state)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stored = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    stored[key] = value
+    path.write_text(json.dumps(stored, indent=2), encoding="utf-8")
+
+
+def place_run(state: InformationState) -> InformationState:
+    """Give the run its id and directory before anything writes a file.
+
+    Assigned in code: the config generator used to supply the id and answered 1
+    every time, so every run wrote into runs/1. Placing the run first also lets
+    the split live inside it rather than next to the data, where two datasets in
+    one folder overwrote each other's train.csv.
+    """
+    run_id = state.get("run_id") or int(datetime.now().strftime("%Y%m%d%H%M%S"))
+    run_dir = Path(state.get("run_dir") or Path("runs") / str(run_id))
+    run_dir.mkdir(parents=True, exist_ok=True)
+    fingerprint = _fingerprint(state["data_path"], state["schema"])
+    print(f"run {run_id} -> {run_dir} (plan fingerprint {fingerprint})")
+    return {"run_id": run_id, "run_dir": str(run_dir), "plan_fingerprint": fingerprint}
+
+
 def summarize(state: InformationState) -> InformationState:
     # whole frame: the planner needs to see the ordering and the entities before the cut
     summary, _ = profile(state["data_path"], state["schema"])
@@ -109,6 +181,12 @@ def summarize(state: InformationState) -> InformationState:
 
 
 def plan_split(state: InformationState) -> InformationState:
+    cached = _cached(state, "split_plan")
+    if cached is not None:
+        split_plan = SplitPlan(**cached)
+        print(f"split plan reused from {_plan_cache(state)}")
+        return {"split_plan": split_plan}
+
     model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0)
     response = model.invoke(
         [
@@ -118,6 +196,7 @@ def plan_split(state: InformationState) -> InformationState:
     )
 
     split_plan = SplitPlan(**parse_json(message_text(response)))
+    _remember(state, "split_plan", split_plan.model_dump())
 
     print(split_plan)
     return {"split_plan": split_plan}
@@ -126,7 +205,7 @@ def plan_split(state: InformationState) -> InformationState:
 def apply_split(state: InformationState) -> InformationState:
     data_frame = pd.read_csv(state["data_path"])
     train, test = apply_split_plan(data_frame, state["split_plan"])
-    train_path, test_path = write_split(train, test, Path(state["data_path"]).parent / "splits")
+    train_path, test_path = write_split(train, test, Path(state["run_dir"]) / "splits")
 
     print(f"split: {len(train)} train -> {train_path} | {len(test)} test -> {test_path}")
     return {"train_path": train_path, "test_path": test_path}
@@ -144,13 +223,58 @@ def summarize_train(state: InformationState) -> InformationState:
     for requirement in requirements:
         print(f"requirement: {requirement.issue}")
 
+    # what every candidate is told about the columns it will receive; the
+    # profile's roles say more than a dtype does
+    columns = [
+        {
+            "name": name,
+            "kind": column["role"],
+            "dtype": column.get("dtype", ""),
+            "n_unique": column.get("n_unique"),
+            "missing_pct": column.get("missing_pct"),
+            "semantic_type": column.get("semantic_type"),
+        }
+        for name, column in full["columns"].items()
+    ]
+
     return {
         "summary": summary,
         "target": target_column(state),
         "task_type": notes["task_type"],
         "drop_columns": notes.get("recommend_drop", []),
         "preprocessing_requirements": requirements,
+        "columns": columns,
     }
+
+
+def screen_leakage(state: InformationState) -> InformationState:
+    """Look for the target inside the features before any model is fitted.
+
+    A formula of one or two columns that reproduces the target on held-out rows
+    is a leak the data shows on its face, and catching it here means no model
+    ever trains on it. What happens to the columns is decided in prepare_run,
+    where the run exists to record it; this node only measures, and tells the
+    planners what it found by adding it to the profile they read.
+    """
+    frame = pd.read_csv(state["train_path"], low_memory=False)
+    hits = relation_screen(
+        frame, state["target"], state["task_type"], state["columns"], seed=state["split_plan"].random_seed
+    )
+    declared = {
+        column.name for column in state["schema"].columns if column.available_at_prediction
+    }
+    policy = state.get("leakage_policy") or "exclude"
+    for hit in hits:
+        if all(column in declared for column in hit["columns"]):
+            hit["outcome"] = "kept: the schema declares these known at prediction time"
+        elif policy == "exclude":
+            hit["outcome"] = "excluded from the run: not declared known at prediction time"
+        else:
+            hit["outcome"] = "kept by the run's leakage policy, though it reconstructs the target"
+        print(f"leakage screen: {', '.join(hit['columns'])}: {hit['formula']} "
+              f"({hit['measure']} {hit['score']:.4f}) -> {hit['outcome']}")
+
+    return {"leakage_screen": hits, "summary": state["summary"] + render_screen(hits)}
 
 
 def probe_env(state: InformationState) -> InformationState:
@@ -161,6 +285,12 @@ def probe_env(state: InformationState) -> InformationState:
 
 
 def generate_config(state: InformationState) -> InformationState:
+    cached = _cached(state, "config")
+    if cached is not None:
+        config = Configs(**cached)
+        print(f"config reused from {_plan_cache(state)}")
+        return {"config": config}
+
     model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0)
     usable = available_model_names(state["environment"])
     # stating this up front beats pruning afterwards: a pruned list loses the
@@ -178,6 +308,7 @@ def generate_config(state: InformationState) -> InformationState:
     )
 
     config = Configs(**parse_json(message_text(response)))
+    _remember(state, "config", config.model_dump())
 
     print(config)
     return {"config": config}
@@ -225,14 +356,50 @@ def resolve_environment(state: InformationState) -> InformationState:
     }
 
 
+def prepare_run(state: InformationState) -> InformationState:
+    """Freeze the run's folds and apply the leakage screen, before anything is scored.
+
+    The folds are computed once and saved, and the baseline and every candidate
+    read the same file: rebuilding a splitter per model, even from one seed,
+    left the comparability of their scores to chance.
+    """
+    run_id, run_dir = state["run_id"], Path(state["run_dir"])
+
+    plan = state["split_plan"]
+    train = pd.read_csv(state["train_path"], low_memory=False)
+    groups = train[plan.group_column] if plan.cv_strategy == "group_kfold" and plan.group_column else None
+    folds = build_folds(plan.cv_strategy, plan.cv_folds, plan.random_seed, train[state["target"]], groups)
+    folds_path = save_folds(run_dir / "folds.npz", folds)
+    print(f"run {run_id}: {len(folds)} {plan.cv_strategy} folds frozen -> {folds_path}")
+
+    # the screen's verdicts become run-wide exclusions, the same record a leak
+    # confirmed later by a model's leak check is written to
+    for hit in state.get("leakage_screen") or []:
+        if hit.get("outcome", "").startswith("excluded"):
+            add_exclusions(run_dir, hit["columns"], {
+                "reason": (
+                    f"leakage screen before any model: {hit['formula']} reproduces the target "
+                    f"({hit['measure']} {hit['score']:.4f} on held-out rows)"
+                ),
+                "found_by": "leakage screen",
+                "measured_with": "relation screen",
+                "score": hit["score"],
+                "measure": hit["measure"],
+            })
+
+    return {"run_id": run_id, "run_dir": str(run_dir), "folds_path": str(folds_path)}
+
+
 def compute_baseline(state: InformationState) -> InformationState:
-    # once, centrally: every worker is measured against the same floor
+    # once, centrally: every worker is measured against the same floor, on the
+    # same frozen folds
     baseline = run_baseline(
-        pd.read_csv(state["train_path"]),
+        pd.read_csv(state["train_path"], low_memory=False),
         state["target"],
         state["task_type"],
         state["split_plan"],
         state["config"],
+        folds=load_folds(state["folds_path"]),
     )
 
     print(f"baseline: {baseline.strategy} -> {baseline.cv_scores}")
@@ -259,12 +426,24 @@ def build_context(state: InformationState) -> InformationState:
             }
         )
 
+    resources = plan_resources(state["train_path"], len(config.models))
+    concurrency = int(os.environ.get("AUTOML_CONCURRENCY") or resources.max_concurrency)
+    print(f"resources: {resources.reason}" + (f"; concurrency overridden to {concurrency}" if concurrency != resources.max_concurrency else ""))
+
     context = RunContext(
-        run_id=config.id,
-        run_dir=str(Path("runs") / str(config.id)),
+        run_id=state["run_id"],
+        run_dir=state["run_dir"],
         train_path=state["train_path"],
         test_path=state["test_path"],
         split_plan=state["split_plan"],
+        folds_path=state["folds_path"],
+        columns=state["columns"],
+        available_at_prediction=[
+            column.name for column in state["schema"].columns
+            if column.available_at_prediction and not column.is_target
+        ],
+        leakage_policy=state.get("leakage_policy") or "exclude",
+        leakage_screen=state.get("leakage_screen") or [],
         summary=state["summary"],
         target=state["target"],
         task_type=state["task_type"],
@@ -283,35 +462,50 @@ def build_context(state: InformationState) -> InformationState:
         # a booster on 200k rows needs longer than a ridge on 800, and parallel
         # workers share one machine, so neither of these can be a constant
         time_budget_seconds=600 if n_rows > 100_000 else 300,
-        n_jobs=2,
+        n_jobs=resources.n_jobs,
+        max_concurrency=concurrency,
+        worker_memory_mb=resources.worker_memory_mb,
+        resource_plan=resources.reason,
+        plan_fingerprint=state.get("plan_fingerprint", ""),
         backend=state.get("backend", "subprocess"),
         environment=state["environment"],
         unavailable_models=state["unavailable_models"],
         environment_notes=state["environment_notes"],
     )
 
+    # written by the graph itself, so a crashed run can be resumed by any caller
+    run_dir = Path(context.run_dir)
+    (run_dir / "context.json").write_text(context.model_dump_json(indent=2), encoding="utf-8")
+    (run_dir / "config.json").write_text(config.model_dump_json(indent=2), encoding="utf-8")
+
     print(f"context: run {context.run_id} -> {context.run_dir}")
     return {"context": context}
 
 
 graph = StateGraph(InformationState)
+graph.add_node("place_run", place_run)
 graph.add_node("summarize", summarize)
 graph.add_node("plan_split", plan_split)
 graph.add_node("apply_split", apply_split)
 graph.add_node("summarize_train", summarize_train)
+graph.add_node("screen_leakage", screen_leakage)
 graph.add_node("probe_env", probe_env)
 graph.add_node("generate_config", generate_config)
 graph.add_node("resolve_environment", resolve_environment)
+graph.add_node("prepare_run", prepare_run)
 graph.add_node("compute_baseline", compute_baseline)
 graph.add_node("build_context", build_context)
-graph.add_edge(START, "summarize")
+graph.add_edge(START, "place_run")
+graph.add_edge("place_run", "summarize")
 graph.add_edge("summarize", "plan_split")
 graph.add_edge("plan_split", "apply_split")
 graph.add_edge("apply_split", "summarize_train")
-graph.add_edge("summarize_train", "probe_env")
+graph.add_edge("summarize_train", "screen_leakage")
+graph.add_edge("screen_leakage", "probe_env")
 graph.add_edge("probe_env", "generate_config")
 graph.add_edge("generate_config", "resolve_environment")
-graph.add_edge("resolve_environment", "compute_baseline")
+graph.add_edge("resolve_environment", "prepare_run")
+graph.add_edge("prepare_run", "compute_baseline")
 graph.add_edge("compute_baseline", "build_context")
 graph.add_edge("build_context", END)
 

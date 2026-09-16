@@ -14,7 +14,7 @@ a field does not bump it.
 """
 
 from pydantic import BaseModel
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .results import INF_SAFE
 
@@ -48,6 +48,7 @@ class ScoreRow(BaseModel):
     wall_seconds: float = 0.0
     artifacts: Dict[str, str] = {}
     note: str = ""              # why there is no score, when there is none
+    eligibility: str = "clean"  # clean | unverified | blocked
 
 
 class GenerationStep(BaseModel):
@@ -170,5 +171,10 @@ class RunReport(BaseModel):
     error_bands: List[ErrorBand] = []
     confusion: List[ConfusionCell] = []
     warnings: List[Warning] = []
+    # columns removed during the run, with the evidence that removed them
+    exclusions: List[Dict[str, Any]] = []
+    # what the pre-fit relation screen found, including relations kept because
+    # the schema declares their columns known at prediction time
+    leakage_screen: List[Dict[str, Any]] = []
 
     narrative: str = ""

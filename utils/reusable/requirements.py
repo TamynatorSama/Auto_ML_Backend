@@ -141,6 +141,26 @@ def derive_requirements(profile: dict) -> List[PreprocessingRequirement]:
             )
         )
 
+    for name, column in profile["columns"].items():
+        variants = column.get("label_variants")
+        if not variants:
+            continue
+        example = " / ".join(repr(label) for label in variants["examples"][0])
+        requirements.append(
+            PreprocessingRequirement(
+                column=name,
+                issue=(
+                    f"{name} writes {variants['groups']} categories more than one way, differing only "
+                    f"by case or spacing (e.g. {example})"
+                ),
+                requirement=(
+                    "pass it through automl_runtime.CategoryCleaner before encoding, so each "
+                    "category becomes one column rather than several"
+                ),
+                applies_to=list(ALL_MODELS),
+            )
+        )
+
     for name in notes.get("high_cardinality_features", []) or []:
         levels = profile["columns"][name]["n_unique"]
         requirements.append(

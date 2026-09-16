@@ -230,3 +230,24 @@ def test_high_cardinality_association_is_fast():
     started = time.perf_counter()
     profile_dataset(df, target="y")
     assert time.perf_counter() - started < 5
+
+
+def test_labels_written_two_ways_are_flagged_and_required_clean():
+    from utils.reusable.requirements import derive_requirements
+
+    df = pd.DataFrame({
+        "plan": rng.choice(["Basic", " Basic", "Premium", "premium", "Standard"], N),
+        "tenure": rng.integers(1, 60, N),
+        "churn": rng.integers(0, 2, N),
+    })
+    p = profile_dataset(df, target="churn")
+
+    assert p["columns"]["plan"]["label_variants"]["groups"] == 2
+    assert any(f[1] == "plan" and "more than one way" in f[2] for f in flags_of(p, "medium"))
+    assert any(r.column == "plan" and "CategoryCleaner" in r.requirement for r in derive_requirements(p))
+
+
+def test_clean_labels_raise_nothing():
+    df = pd.DataFrame({"plan": rng.choice(["Basic", "Premium"], N), "churn": rng.integers(0, 2, N)})
+    p = profile_dataset(df, target="churn")
+    assert "label_variants" not in p["columns"]["plan"]

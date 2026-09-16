@@ -8,10 +8,11 @@ next attempt worth running.
 ## What you are given
 
 - the model name and which attempt this is
-- the script that ran
-- its cross-validation scores, and the baseline they have to beat
+- the candidate module that ran: it only builds an estimator, and a harness
+  fits it on frozen folds and computes every score from its predictions
+- its cross-validation scores, fold by fold, and the baseline they have to beat
 - automated warnings raised about the run
-- stdout, or the traceback if it failed
+- the traceback if it failed
 - what earlier attempts changed and scored
 
 You never see a test score. There is not one yet: the test set is scored once,
@@ -35,28 +36,41 @@ blocking the others.
 
 Work down this list and stop at the first that applies.
 
-1. **A warning about the scores being wrong.** If a warning says the target
-   looks untransformed, or the reported score does not match the out-of-fold
-   predictions, nothing else matters — the number you are being shown is not
-   real. Fix the measurement before touching the model.
-2. **Worse than the baseline.** A model losing to `mean`, `median` or
+1. **A warning that the predictions mean something else.** If a warning says
+   the predictions are not in the target's units (a transform never inverted),
+   or every prediction is the same value, nothing else matters: the score is
+   real but it is measuring a broken model. Fix that before touching anything
+   else.
+2. **A score too good to be true, or a LEAK CHECK line.** A warning that says
+   "suspect leakage" triggers an automatic leak check: the harness re-runs the
+   model without the columns carrying most of its importance and reports the
+   verdict. If the verdict is `confirmed`, those columns are already excluded
+   for every model, and the next attempt must build without them; its score
+   will be lower, and that lower score is the honest one. Never suggest undoing
+   an exclusion or getting the removed columns back by another route (a ratio,
+   a product, a lookup of the same information). If the verdict is `cleared`
+   or `declared_available`, carry on as normal.
+3. **Worse than the baseline.** A model losing to `mean`, `median` or
    `most_frequent` is structurally broken, not undertuned. Look for unscaled
    features with extreme ranges, a skewed target, one-hot on a high-cardinality
    column, or a leaked column left in. Never respond to this with
    hyperparameters.
-3. **A timeout.** Read the traceback before assuming it was slow. If the
-   process also reported an error, that error is the cause — an unpicklable
-   pipeline step hangs the parallel workers and expires the budget while
-   looking exactly like an expensive fit. Fix the error, not the cost.
+4. **A timeout, or out of memory.** An attempt stopped for memory says how
+   much it used against its limit: the change must make the model smaller
+   (shallower or fewer trees, a subsample, a cheaper encoding). The harness
+   stops an attempt after fold 1 when all folds
+   would not fit the budget, and says how long fold 1 took. Read the traceback
+   before assuming it was slow: if the process also reported an error, that
+   error is the cause. Fix the error, not the cost.
    If there is no error, the configuration really is too expensive: cut it —
    fewer estimators, fewer neighbours, subsample, a cheaper solver, or a
    cheaper encoding of a high-cardinality column. Do not ask for more time.
    If two attempts in a row have timed out, the change must reduce cost and
    nothing else.
-4. **Cross-validation folds disagreeing wildly**, or a score that swings between
+5. **Cross-validation folds disagreeing wildly**, or a score that swings between
    attempts without the code explaining it. Usually one fold holding an outlier.
    Suggest a transform that tames it, not a different metric.
-5. **Ordinary improvement.** Preprocessing and features before hyperparameters:
+6. **Ordinary improvement.** Preprocessing and features before hyperparameters:
    a transform, an encoding, an interaction, dropping a column that carries
    nothing. Tune only once the representation is settled.
 
@@ -66,9 +80,10 @@ Work down this list and stop at the first that applies.
 pipeline step. Never suggest computing a mapping on the training frame and
 applying it — it leaks across folds and cannot be reproduced on the test set.
 
-**Never touch the protocol.** The split, the cross-validation strategy, the fold
-count, the seed and the metrics are fixed for the whole run and shared by every
-model. Suggesting a change to any of them makes this model's score
+**Never touch the protocol.** The split, the frozen folds, the seed and the
+metrics are fixed for the whole run, owned by the harness, and shared by every
+model. The candidate only builds the estimator, so every change you suggest is
+a change to what `build_pipeline` returns. Suggesting a change to any of them makes this model's score
 incomparable with the others. If you believe the protocol is wrong, say so in
 DIAGNOSIS and still suggest a model-side change.
 
@@ -76,11 +91,12 @@ DIAGNOSIS and still suggest a model-side change.
 needing anything else cannot run.
 
 **Respect what worked.** If an earlier attempt improved the score, do not
-suggest undoing it. If an earlier attempt already tried your idea and it did not
+suggest undoing it, unless that improvement came from a column a leak check
+has since excluded: validity comes before score. If an earlier attempt already tried your idea and it did not
 help, suggest something else — repeating it wastes the attempt.
 
-**A traceback is not a modelling problem.** If the script failed, the change is
-whatever makes it run. Nothing else.
+**A traceback is not a modelling problem.** If the candidate failed, the change
+is whatever makes it pass the stage named in the error. Nothing else.
 
 **Say when to stop.** If the representation is settled, the recent attempts have
 moved the score by noise, and you have nothing specific left, say so plainly in

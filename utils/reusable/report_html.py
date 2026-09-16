@@ -337,7 +337,66 @@ def _warnings(report: RunReport) -> str:
     return f'<section class="panel"><h2>raised about these results</h2>{"".join(flags)}</section>'
 
 
+class _View:
+    """The flat shape the page is written against, derived from a RunReport.
+
+    The report grew nested sections (dataset, protocol, totals) and structured
+    metrics and warnings; the page was never updated and crashed the run when
+    asked to render. Deriving the old names in one place keeps the page working
+    without rewriting every section of it.
+    """
+
+    def __init__(self, report: RunReport):
+        dataset, protocol, totals = report.dataset, report.protocol, report.totals
+        self.run_id = report.run_id
+        self.status = report.status
+        self.narrative = report.narrative
+        self.selection_reason = report.selection_reason
+        self.improvement_over_baseline = report.improvement_over_baseline
+        self.comparison = report.comparison
+        self.importance = report.importance
+        self.error_bands = report.error_bands
+        self.confusion = report.confusion
+        self.trace = report.trace
+
+        self.selected = next((row for row in report.comparison if row.selected), None)
+        self.metrics = [metric.name for metric in report.metrics]
+        self.primary_metric = next(
+            (metric.name for metric in report.metrics if metric.primary), self.metrics[0] if self.metrics else ""
+        )
+
+        self.target, self.task_type = dataset.target, dataset.task_type
+        self.train_rows, self.test_rows = dataset.train_rows, dataset.test_rows
+        self.baseline_strategy, self.baseline_scores = protocol.baseline_strategy, protocol.baseline_scores
+        self.environment = protocol.environment
+        self.requirements = [
+            f"{r.get('column') or 'all columns'}: {r.get('issue')} -> {r.get('requirement')}"
+            for r in protocol.requirements
+        ]
+        self.split_summary = (
+            f"{protocol.split_method}, {protocol.test_size:.0%} held out, seed {protocol.seed}"
+            + (f" ({protocol.split_reason})" if protocol.split_reason else "")
+        )
+        self.cv_summary = f"{protocol.cv_strategy} x {protocol.cv_folds}"
+
+        self.models_scored, self.models_planned = totals.models_scored, totals.models_planned
+        self.generations, self.repairs = totals.generations, totals.repairs
+        self.executions, self.wall_seconds = totals.executions, totals.wall_seconds
+        self.artifacts = self.selected.artifacts if self.selected else {}
+
+        warnings = {}
+        for exclusion in report.exclusions:
+            warnings.setdefault("run", []).append(
+                f"leakage: {exclusion['column']} excluded: {exclusion.get('reason', '')}"
+            )
+        for warning in report.warnings:
+            warnings.setdefault(warning.model, []).append(warning.message)
+        self.warnings = warnings
+
+
 def render_html(report: RunReport, standalone: bool = True) -> str:
+    if isinstance(report, RunReport):
+        report = _View(report)
     narrative = (
         f'<section class="panel"><h2>summary</h2><p>{_e(report.narrative)}</p></section>'
         if report.narrative else ""

@@ -8,7 +8,7 @@ class Baseline(BaseModel):
 
 
 class Configs(BaseModel):
-    id: int
+    id: int = 0            # unused: the run id is assigned in code, not by the generator
     models: List[str]
     baseline: Baseline
     eval_matrics: List[str]

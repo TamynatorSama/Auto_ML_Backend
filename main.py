@@ -12,6 +12,10 @@ from code_gen_eval.base import app as code_gen_eval_app
 
 class AutoMLState(TypedDict):
     topic: str
+    # optional: place the run; it is resumable from this directory with
+    # code_gen_eval.resume.resume_run(run_dir)
+    run_id: int
+    run_dir: str
     data_path: str
     schema: DataSchema
     full_summary: str

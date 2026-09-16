@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from .results import INF_SAFE, BaselineResult, PreprocessingRequirement
 from .split_plan import SplitPlan
@@ -21,6 +21,12 @@ class RunContext(BaseModel):
     train_path: str
     test_path: str
     split_plan: SplitPlan
+    # fold row indices computed once for the whole run, so every model and the
+    # baseline are scored on exactly the same rows
+    folds_path: str = ""
+    # what each candidate is told about the columns it receives (name, kind,
+    # dtype, n_unique, missing_pct), taken from the training-set profile
+    columns: List[Dict[str, Any]] = []
     summary: str
     target: str
     task_type: str
@@ -30,6 +36,16 @@ class RunContext(BaseModel):
     preprocessing_requirements: List[PreprocessingRequirement] = []
 
     baseline: BaselineResult
+
+    # columns the schema declares known at prediction time; a leak check never
+    # excludes these, whatever it finds
+    available_at_prediction: List[str] = []
+    # exclude: a confirmed leak on an undeclared column is removed run-wide
+    # keep:    it is reported but stays in
+    leakage_policy: str = "exclude"
+    # relations the pre-fit screen found between columns and the target, with
+    # what the policy did about each
+    leakage_screen: List[Dict[str, Any]] = []
 
     eval_matrics: List[str]
     primary_metric: str
@@ -42,6 +58,12 @@ class RunContext(BaseModel):
 
     time_budget_seconds: int
     n_jobs: int
+    # how many models train at once, and what one worker is expected to need;
+    # planned from the machine and the data when the run starts
+    max_concurrency: int = 2
+    worker_memory_mb: float = 0.0
+    resource_plan: str = ""
+    plan_fingerprint: str = ""
 
     # resolved once before the fan-out and pinned, so every model in the run is
     # measured under identical library versions

@@ -28,22 +28,43 @@ class PreprocessingRequirement(BaseModel):
     applies_to: List[str] = []      # model names, or ["*"] for every model
 
 
+class Finding(BaseModel):
+    """Something a check concluded about an attempt, in a form the selection rules can act on."""
+
+    kind: str           # constant_predictions | untransformed_target | missing_predictions |
+                        # no_primary_score | worse_than_baseline | suspect_leakage
+    severity: str       # blocking: cannot be selected | suspect: needs a leak check | warning
+    message: str
+    evidence: Dict[str, float] = {}
+
+
 class AttemptRecord(BaseModel):
     model_config = INF_SAFE
     model: str
     attempt: int              # every execution of this model, in order
     generation: int = 1       # the modelling attempt this belongs to
-    kind: str = "generate"    # generate | repair
-    script_path: str
-    status: str = "ok"          # ok | error | timeout | cached
+    kind: str = "generate"    # generate | repair | ablation
+    script_path: str          # the candidate module that ran
+    status: str = "ok"          # ok | error | syntax_error | dependency_error | timeout | out_of_memory | cached
     changes: str = ""
+    # computed by the harness from the pooled out-of-fold predictions; the
+    # candidate never reports its own
     cv_scores: Dict[str, float] = {}
     test_scores: Dict[str, float] = {}
-    fit_seconds: Optional[float] = None      # reported by the script
+    fold_scores: List[Optional[float]] = []  # primary metric, fold by fold
+    diagnostics: Dict[str, float] = {}       # scale-free readings: r2, or roc_auc
+    fit_seconds: Optional[float] = None      # fitting only, summed over folds
     wall_seconds: Optional[float] = None     # measured by the runner
     peak_memory_mb: Optional[float] = None
     artifacts: Dict[str, str] = {}
-    warnings: List[str] = []
+    findings: List[Finding] = []
+    warnings: List[str] = []                 # the findings and evaluator notes as sentences
+    excluded_columns: List[str] = []         # columns this attempt ran without
+    cached_from: Optional[int] = None        # identical to this earlier attempt
+    # a leak check: this record re-ran attempt `ablation_of` without `ablated_columns`
+    ablation_of: Optional[int] = None
+    ablated_columns: List[str] = []
+    verdict: str = ""        # confirmed | cleared | declared_available | kept_by_policy | unresolved
     stdout: str = ""
     traceback: str = ""
     judge_notes: str = ""
@@ -61,3 +82,5 @@ class ModelResult(BaseModel):
     # raised while scoring the test set, so they cannot live on a loop attempt
     test_warnings: List[str] = []
     error: str = ""
+    eligibility: str = "clean"      # clean | unverified | blocked
+    eligibility_note: str = ""

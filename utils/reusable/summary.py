@@ -391,6 +391,21 @@ def _category_summary(non_null: pd.Series, include_values: bool, max_categories:
     return out
 
 
+def _label_variants(non_null: pd.Series, examples: int = 3) -> dict | None:
+    """Labels that are one category once case and spacing are ignored.
+
+    'Basic' and ' Basic', or 'LOS ANGELES' and 'Los Angeles', are one category
+    written two ways; an encoder treats them as two, which splits the rows and
+    their signal between columns that mean the same thing.
+    """
+    labels = pd.Series(non_null.astype(str).unique())
+    normalized = labels.str.strip().str.lower().str.replace(r"\s+", " ", regex=True)
+    groups = [sorted(group) for group in labels.groupby(normalized).agg(list) if len(group) > 1]
+    if not groups:
+        return None
+    return {"groups": len(groups), "examples": groups[:examples]}
+
+
 def _numeric_stats(v: pd.Series) -> dict:
     q1, q3 = v.quantile(0.25), v.quantile(0.75)
     iqr = q3 - q1
@@ -440,6 +455,11 @@ def _profile_column(s: pd.Series, role: str, semantic_type: str | None, n_rows: 
 
     elif role in ("categorical", "binary"):
         col.update(_category_summary(non_null, include_values, max_categories))
+
+    if role in ("categorical", "binary") and not pd.api.types.is_numeric_dtype(s) and len(non_null):
+        variants = _label_variants(non_null)
+        if variants:
+            col["label_variants"] = variants
 
     elif role == "datetime":
         dates = non_null if pd.api.types.is_datetime64_any_dtype(s) else _to_datetime_silent(non_null).dropna()
@@ -754,6 +774,15 @@ def _build_flags(df, profile, roles, semantic_types, target) -> list[dict]:
             flags.append({"severity": "high", "column": c,
                           "issue": "near-unique, looks like an identifier",
                           "action": action})
+
+    for c, column in profile["columns"].items():
+        variants = column.get("label_variants")
+        if variants:
+            example = " / ".join(repr(label) for label in variants["examples"][0])
+            flags.append({"severity": "medium", "column": c,
+                          "issue": f"{variants['groups']} categories are written more than one way, "
+                                   f"differing only by case or spacing (e.g. {example})",
+                          "action": "normalise labels before encoding, e.g. automl_runtime.CategoryCleaner"})
 
     swap = _coordinate_swap(df, semantic_types)
     if swap:
