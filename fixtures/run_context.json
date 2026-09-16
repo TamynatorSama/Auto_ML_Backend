@@ -1,0 +1,148 @@
+{
+  "run_id": 1,
+  "run_dir": "runs\\1",
+  "train_path": "data\\splits\\train.csv",
+  "test_path": "data\\splits\\test.csv",
+  "split_plan": {
+    "method": "random",
+    "test_size": 0.2,
+    "random_seed": 42,
+    "shuffle": true,
+    "time_column": null,
+    "group_column": null,
+    "stratify_column": null,
+    "drop_duplicates": true,
+    "cv_strategy": "kfold",
+    "cv_folds": 5,
+    "reason": "Regression task with no event-time column and no clear entity column; ADDRESS is a free-form location attribute used as a feature, not a group key.",
+    "warnings": [
+      "1.36% duplicate rows removed before the split; near-duplicate listings may still straddle train and test"
+    ]
+  },
+  "summary": "# DATASET PROFILE\n23,240 rows x 12 columns | 5.77 MB | 100.0% complete rows | 0.0% duplicates\n\n## TARGET: TARGET(PRICE_IN_LACS) -> regression\nProperty price in lakh rupees\nmean 140.1804 | std 628.5529 | median 61.35 | range [0.25, 28000.0] (4.4 orders of magnitude) | skew 17.198 | zeros 0.0% | negatives 0.0%\n\n## COLUMNS\n| column | role | miss% | uniq | detail |\n|---|---|---|---|---|\n| POSTED_BY | categorical | 0.0 | 3 | Who posted the property listing (Owner, Dealer, or Builder); Dealer 61.71%, Owner 36.23%, Builder 2.05% |\n| UNDER_CONSTRUCTION | binary | 0.0 | 2 | Whether the property is under construction (0 = no, 1 = yes); 0 82.21%, 1 17.79% |\n| RERA | binary | 0.0 | 2 | Whether the property is RERA registered (0 = no, 1 = yes); 0 68.72%, 1 31.28% |\n| BHK_NO. | numeric | 0.0 | 16 | Number of bedrooms in the property; med 2.0 [1.0, 20.0] skew 2.283 out 0.99% |\n| BHK_OR_RK | binary | 0.0 | 2 | Property layout type (BHK or RK); BHK 99.91%, RK 0.09% (+1 rare) |\n| SQUARE_FT | numeric | 0.0 | 16198 | Property area in square feet; med 1174.9447 [3.0, 254545454.5] skew 136.2119 out 5.51% |\n| READY_TO_MOVE | binary | 0.0 | 2 | Whether the property is ready to move in (0 = no, 1 = yes); 1 82.21%, 0 17.79% |\n| RESALE | binary | 0.0 | 2 | Whether the property is a resale listing (0 = no, 1 = yes); 1 93.16%, 0 6.84% |\n| ADDRESS | categorical:address | 0.0 | 6087 | Property location address (locality and city); Zirakpur,Chandigarh 1.6%, Whitefield,Bangalore 0.8%, Raj Nagar Extension,Ghaziabad 0.72% (+6086 rare) |\n| LONGITUDE | numeric:longitude | 0.0 | 3684 | Geographic longitude of the property; med 20.7392 [-37.713, 59.9129] skew 0.168 out 0.49% valid_coord 100.0% |\n| LATITUDE | numeric:latitude | 0.0 | 3673 | Geographic latitude of the property; med 77.3229 [-117.0017, 144.9578] skew -10.3959 out 10.16% valid_coord 99.28% |\n\n## ASSOCIATION WITH TARGET (strongest first)\nSQUARE_FT 0.569, BHK_NO. 0.503, ADDRESS 0.314, RESALE 0.205, LATITUDE 0.174, LONGITUDE 0.153, POSTED_BY 0.093, RERA 0.07, UNDER_CONSTRUCTION 0.058, READY_TO_MOVE 0.058, BHK_OR_RK 0.0\n(spearman for numeric-numeric, correlation ratio for mixed, cramers V for categorical-categorical; all bias-corrected and scaled 0-1; identifiers excluded)\n\n## FLAGS\n- [MEDIUM] LATITUDE: LATITUDE/LONGITUDE may be swapped: 0.72% of rows fall outside the valid range as labelled, 0.0% with the two columns exchanged -> treat the pair as (lon, lat) or drop the out-of-range rows' coordinates before deriving distance or region features; tree models can use the raw values either way\n- [MEDIUM] SQUARE_FT: skew 136.2119 across 8.4 orders of magnitude (max 254545454.5) -> log/quantile transform or clip; a handful of extreme rows will otherwise dominate linear and distance-based fits\n- [MEDIUM] ADDRESS: high cardinality (6087 levels) -> extract stable location components or use frequency/target encoding; avoid raw one-hot on full addresses\n- [MEDIUM] TARGET(PRICE_IN_LACS): target skew 17.198 across 4.4 orders of magnitude -> consider TransformedTargetRegressor(func=np.log1p, inverse_func=np.expm1) for linear and distance-based models so the tail does not dominate the fit; tree models can fit the raw target. A log target optimises relative error, so confirm the primary metric still improves in original units\n- [LOW] BHK_NO.: skew 2.283 -> log/quantile transform helps linear and distance-based models\n\n## MODELLING NOTES\n- task_type: regression\n- split_strategy: random k-fold\n- suggested_metrics: ['mae', 'rmse', 'r2']\n- baseline_to_beat: median predictor\n- target_transform: consider log1p via TransformedTargetRegressor (skewed, non-negative)\n- scale_spread_orders_of_magnitude: 7.1\n- scaling_required_for: linear models, SVM, KNN, neural nets\n- rows_per_feature: 2112.7\n- preprocessing_recommendations:\n  - scale: ['BHK_NO.', 'SQUARE_FT']\n  - encode_low_cardinality: ['POSTED_BY', 'UNDER_CONSTRUCTION', 'RERA', 'BHK_OR_RK', 'READY_TO_MOVE', 'RESALE']\n  - encode_high_cardinality: ['ADDRESS']\n  - validate_coordinates: ['LONGITUDE', 'LATITUDE']\n  - parse_structured_strings: ['ADDRESS']\n- high_cardinality_guidance: prefer native categorical support, frequency encoding, hashing, or target encoding inside cross-validation; avoid fitting target encoders before the split\n- coordinate_guidance: validate ranges, then use raw coordinates for tree models or derive distance/geohash/region features for linear models\n- leakage_reminder: fit every transform (imputer, scaler, encoder) on the training fold only",
+  "target": "TARGET(PRICE_IN_LACS)",
+  "task_type": "regression",
+  "target_stats": {
+    "n_unique": 1111.0,
+    "min": 0.25,
+    "max": 28000.0,
+    "mean": 140.1803760757315,
+    "median": 61.349999999999994,
+    "std": 628.5528965597232
+  },
+  "drop_columns": [],
+  "preprocessing_requirements": [
+    {
+      "column": "TARGET(PRICE_IN_LACS)",
+      "issue": "target skew is 17.198, so a few large values dominate the fit",
+      "requirement": "fit through TransformedTargetRegressor(func=np.log1p, inverse_func=np.expm1) from sklearn.compose, so predictions and every reported score stay in the target's original units",
+      "applies_to": [
+        "ridge",
+        "lasso",
+        "elastic_net",
+        "linear_regression",
+        "logistic_regression",
+        "svm",
+        "knn",
+        "mlp"
+      ]
+    },
+    {
+      "column": "SQUARE_FT",
+      "issue": "SQUARE_FT has skew 136.2119 and a range of [3.0, 254545454.5]",
+      "requirement": "clip it to a high percentile or pass it through QuantileTransformer(output_distribution='normal') inside the pipeline before fitting",
+      "applies_to": [
+        "ridge",
+        "lasso",
+        "elastic_net",
+        "linear_regression",
+        "logistic_regression",
+        "svm",
+        "knn",
+        "mlp"
+      ]
+    },
+    {
+      "column": "LATITUDE",
+      "issue": "LATITUDE has skew -10.3959 and a range of [-117.0017, 144.9578]",
+      "requirement": "clip it to a high percentile or pass it through QuantileTransformer(output_distribution='normal') inside the pipeline before fitting",
+      "applies_to": [
+        "ridge",
+        "lasso",
+        "elastic_net",
+        "linear_regression",
+        "logistic_regression",
+        "svm",
+        "knn",
+        "mlp"
+      ]
+    },
+    {
+      "column": "LATITUDE",
+      "issue": "LATITUDE has 0.72% of values outside its valid range",
+      "requirement": "clip to the valid range or treat the invalid rows as missing, as a pipeline step",
+      "applies_to": [
+        "*"
+      ]
+    },
+    {
+      "column": null,
+      "issue": "numeric columns span 7.1 orders of magnitude",
+      "requirement": "scale the numeric columns inside the pipeline",
+      "applies_to": [
+        "ridge",
+        "lasso",
+        "elastic_net",
+        "linear_regression",
+        "logistic_regression",
+        "svm",
+        "knn",
+        "mlp"
+      ]
+    },
+    {
+      "column": "ADDRESS",
+      "issue": "ADDRESS has 6087 categories",
+      "requirement": "frequency or target encode it inside the pipeline. Do not one-hot it and do not hand it to a booster as a native categorical: both make the fit enormous",
+      "applies_to": [
+        "*"
+      ]
+    }
+  ],
+  "baseline": {
+    "strategy": "median",
+    "applicable": true,
+    "cv_scores": {
+      "mae": 102.67543029259896,
+      "rmse": 633.4523302607474,
+      "r2": -0.01569403006483716
+    },
+    "note": "median scored out-of-fold on 23240 of 23240 training rows"
+  },
+  "eval_matrics": [
+    "mae",
+    "rmse",
+    "r2"
+  ],
+  "primary_metric": "mae",
+  "metric_direction": "lower",
+  "improvement_metric": "mae",
+  "improvement_delta": 0.01,
+  "improvement_mode": "relative",
+  "early_stopping_patience": 2,
+  "max_tries": 4,
+  "time_budget_seconds": 300,
+  "n_jobs": 2,
+  "backend": "subprocess",
+  "environment": {
+    "sklearn": "1.8.0",
+    "pandas": "3.0.3",
+    "numpy": "2.4.6",
+    "scipy": "1.17.1",
+    "joblib": "1.5.3",
+    "lightgbm": "4.6.0",
+    "catboost": "1.2.10"
+  },
+  "unavailable_models": {},
+  "environment_notes": []
+}

@@ -1,0 +1,23 @@
+{
+  "id": 1,
+  "models": [
+    "catboost",
+    "ridge",
+    "random_forest",
+    "mlp"
+  ],
+  "baseline": {
+    "strategy": "median",
+    "applicable": true
+  },
+  "eval_matrics": [
+    "mae",
+    "rmse",
+    "r2"
+  ],
+  "early_stopping_patience": 2,
+  "max_tries": 4,
+  "improvement_delta": 0.01,
+  "improvement_mode": "relative",
+  "improvement_metric": "mae"
+}

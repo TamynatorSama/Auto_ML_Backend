@@ -1,0 +1,652 @@
+{
+  "$defs": {
+    "ConfusionCell": {
+      "description": "Classification only.",
+      "properties": {
+        "actual": {
+          "title": "Actual",
+          "type": "string"
+        },
+        "predicted": {
+          "title": "Predicted",
+          "type": "string"
+        },
+        "rows": {
+          "title": "Rows",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "actual",
+        "predicted",
+        "rows"
+      ],
+      "title": "ConfusionCell",
+      "type": "object"
+    },
+    "DatasetInfo": {
+      "properties": {
+        "target": {
+          "title": "Target",
+          "type": "string"
+        },
+        "task_type": {
+          "title": "Task Type",
+          "type": "string"
+        },
+        "train_rows": {
+          "default": 0,
+          "title": "Train Rows",
+          "type": "integer"
+        },
+        "test_rows": {
+          "default": 0,
+          "title": "Test Rows",
+          "type": "integer"
+        },
+        "train_path": {
+          "default": "",
+          "title": "Train Path",
+          "type": "string"
+        },
+        "test_path": {
+          "default": "",
+          "title": "Test Path",
+          "type": "string"
+        },
+        "target_stats": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "default": {},
+          "title": "Target Stats",
+          "type": "object"
+        }
+      },
+      "required": [
+        "target",
+        "task_type"
+      ],
+      "title": "DatasetInfo",
+      "type": "object"
+    },
+    "ErrorBand": {
+      "description": "Error inside one slice of the target range. Regression only.",
+      "properties": {
+        "band": {
+          "title": "Band",
+          "type": "string"
+        },
+        "lower": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lower"
+        },
+        "upper": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Upper"
+        },
+        "rows": {
+          "title": "Rows",
+          "type": "integer"
+        },
+        "mean_absolute_error": {
+          "title": "Mean Absolute Error",
+          "type": "number"
+        },
+        "mean_signed_error": {
+          "title": "Mean Signed Error",
+          "type": "number"
+        }
+      },
+      "required": [
+        "band",
+        "rows",
+        "mean_absolute_error",
+        "mean_signed_error"
+      ],
+      "title": "ErrorBand",
+      "type": "object"
+    },
+    "FeatureWeight": {
+      "properties": {
+        "feature": {
+          "title": "Feature",
+          "type": "string"
+        },
+        "importance": {
+          "title": "Importance",
+          "type": "number"
+        },
+        "share": {
+          "default": 0.0,
+          "title": "Share",
+          "type": "number"
+        }
+      },
+      "required": [
+        "feature",
+        "importance"
+      ],
+      "title": "FeatureWeight",
+      "type": "object"
+    },
+    "GenerationStep": {
+      "description": "One modelling attempt: what it changed, and what that bought.",
+      "properties": {
+        "generation": {
+          "title": "Generation",
+          "type": "integer"
+        },
+        "attempt": {
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "changes": {
+          "default": "",
+          "title": "Changes",
+          "type": "string"
+        },
+        "score": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Score"
+        },
+        "delta": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Delta"
+        },
+        "repairs": {
+          "default": 0,
+          "title": "Repairs",
+          "type": "integer"
+        },
+        "judge_notes": {
+          "default": "",
+          "title": "Judge Notes",
+          "type": "string"
+        }
+      },
+      "required": [
+        "generation",
+        "attempt",
+        "status"
+      ],
+      "title": "GenerationStep",
+      "type": "object"
+    },
+    "MetricSpec": {
+      "description": "What a metric is, so a view can rank and colour it without a lookup table.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "direction": {
+          "title": "Direction",
+          "type": "string"
+        },
+        "primary": {
+          "default": false,
+          "title": "Primary",
+          "type": "boolean"
+        },
+        "drives_improvement": {
+          "default": false,
+          "title": "Drives Improvement",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "direction"
+      ],
+      "title": "MetricSpec",
+      "type": "object"
+    },
+    "Protocol": {
+      "description": "How the run was measured. Without this the scores are unverifiable.",
+      "properties": {
+        "split_method": {
+          "default": "",
+          "title": "Split Method",
+          "type": "string"
+        },
+        "test_size": {
+          "default": 0.0,
+          "title": "Test Size",
+          "type": "number"
+        },
+        "seed": {
+          "default": 0,
+          "title": "Seed",
+          "type": "integer"
+        },
+        "drop_duplicates": {
+          "default": false,
+          "title": "Drop Duplicates",
+          "type": "boolean"
+        },
+        "cv_strategy": {
+          "default": "",
+          "title": "Cv Strategy",
+          "type": "string"
+        },
+        "cv_folds": {
+          "default": 0,
+          "title": "Cv Folds",
+          "type": "integer"
+        },
+        "split_reason": {
+          "default": "",
+          "title": "Split Reason",
+          "type": "string"
+        },
+        "split_warnings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Split Warnings",
+          "type": "array"
+        },
+        "baseline_strategy": {
+          "default": "",
+          "title": "Baseline Strategy",
+          "type": "string"
+        },
+        "baseline_applicable": {
+          "default": true,
+          "title": "Baseline Applicable",
+          "type": "boolean"
+        },
+        "baseline_scores": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "default": {},
+          "title": "Baseline Scores",
+          "type": "object"
+        },
+        "max_tries": {
+          "default": 0,
+          "title": "Max Tries",
+          "type": "integer"
+        },
+        "early_stopping_patience": {
+          "default": 0,
+          "title": "Early Stopping Patience",
+          "type": "integer"
+        },
+        "improvement_delta": {
+          "default": 0.0,
+          "title": "Improvement Delta",
+          "type": "number"
+        },
+        "improvement_mode": {
+          "default": "",
+          "title": "Improvement Mode",
+          "type": "string"
+        },
+        "time_budget_seconds": {
+          "default": 0,
+          "title": "Time Budget Seconds",
+          "type": "integer"
+        },
+        "environment": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "title": "Environment",
+          "type": "object"
+        },
+        "requirements": {
+          "default": [],
+          "items": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "title": "Requirements",
+          "type": "array"
+        }
+      },
+      "title": "Protocol",
+      "type": "object"
+    },
+    "RunTotals": {
+      "properties": {
+        "models_planned": {
+          "default": 0,
+          "title": "Models Planned",
+          "type": "integer"
+        },
+        "models_scored": {
+          "default": 0,
+          "title": "Models Scored",
+          "type": "integer"
+        },
+        "executions": {
+          "default": 0,
+          "title": "Executions",
+          "type": "integer"
+        },
+        "generations": {
+          "default": 0,
+          "title": "Generations",
+          "type": "integer"
+        },
+        "repairs": {
+          "default": 0,
+          "title": "Repairs",
+          "type": "integer"
+        },
+        "failures": {
+          "default": 0,
+          "title": "Failures",
+          "type": "integer"
+        },
+        "wall_seconds": {
+          "default": 0.0,
+          "title": "Wall Seconds",
+          "type": "number"
+        }
+      },
+      "title": "RunTotals",
+      "type": "object"
+    },
+    "ScoreRow": {
+      "description": "One model, as a row of the comparison table.",
+      "properties": {
+        "rank": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rank"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "selected": {
+          "default": false,
+          "title": "Selected",
+          "type": "boolean"
+        },
+        "test_scores": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "default": {},
+          "title": "Test Scores",
+          "type": "object"
+        },
+        "cv_scores": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "default": {},
+          "title": "Cv Scores",
+          "type": "object"
+        },
+        "generations": {
+          "default": 0,
+          "title": "Generations",
+          "type": "integer"
+        },
+        "repairs": {
+          "default": 0,
+          "title": "Repairs",
+          "type": "integer"
+        },
+        "executions": {
+          "default": 0,
+          "title": "Executions",
+          "type": "integer"
+        },
+        "best_attempt": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Best Attempt"
+        },
+        "wall_seconds": {
+          "default": 0.0,
+          "title": "Wall Seconds",
+          "type": "number"
+        },
+        "artifacts": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "title": "Artifacts",
+          "type": "object"
+        },
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model",
+        "status"
+      ],
+      "title": "ScoreRow",
+      "type": "object"
+    },
+    "Warning": {
+      "description": "Something raised about a result, with enough to render it without parsing.",
+      "properties": {
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "severity": {
+          "title": "Severity",
+          "type": "string"
+        },
+        "stage": {
+          "title": "Stage",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model",
+        "severity",
+        "stage",
+        "message"
+      ],
+      "title": "Warning",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "integer"
+    },
+    "generated_at": {
+      "title": "Generated At",
+      "type": "string"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string"
+    },
+    "dataset": {
+      "$ref": "#/$defs/DatasetInfo"
+    },
+    "protocol": {
+      "$ref": "#/$defs/Protocol"
+    },
+    "totals": {
+      "$ref": "#/$defs/RunTotals"
+    },
+    "metrics": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/MetricSpec"
+      },
+      "title": "Metrics",
+      "type": "array"
+    },
+    "selected_model": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Selected Model"
+    },
+    "selection_reason": {
+      "default": "",
+      "title": "Selection Reason",
+      "type": "string"
+    },
+    "improvement_over_baseline": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Improvement Over Baseline"
+    },
+    "comparison": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ScoreRow"
+      },
+      "title": "Comparison",
+      "type": "array"
+    },
+    "trace": {
+      "additionalProperties": {
+        "items": {
+          "$ref": "#/$defs/GenerationStep"
+        },
+        "type": "array"
+      },
+      "default": {},
+      "title": "Trace",
+      "type": "object"
+    },
+    "importance": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/FeatureWeight"
+      },
+      "title": "Importance",
+      "type": "array"
+    },
+    "error_bands": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ErrorBand"
+      },
+      "title": "Error Bands",
+      "type": "array"
+    },
+    "confusion": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ConfusionCell"
+      },
+      "title": "Confusion",
+      "type": "array"
+    },
+    "warnings": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Warning"
+      },
+      "title": "Warnings",
+      "type": "array"
+    },
+    "narrative": {
+      "default": "",
+      "title": "Narrative",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "generated_at",
+    "status",
+    "dataset",
+    "protocol",
+    "totals"
+  ],
+  "title": "RunReport",
+  "type": "object"
+}
