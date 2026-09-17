@@ -419,3 +419,71 @@ def test_screen_keeps_columns_the_schema_declares_available(tmp_path):
 
     assert state["leakage_screen"][0]["outcome"].startswith("kept")
     assert read_exclusions(state["run_dir"]) == {}
+
+
+# ---------------------------------------------------------------------------
+# losing to the baseline, and a fold that diverged
+# ---------------------------------------------------------------------------
+
+def _scored(tmp_path, mae, folds):
+    attempt_dir = tmp_path / "mlp" / "attempt_3"
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"row_index": [0, 1, 2], "y_true": [100.0, 200.0, 300.0],
+                  "prediction": [150.0, 180.0, 900.0]}).to_csv(attempt_dir / "oof_predictions.csv", index=False)
+    return AttemptRecord(model="mlp", attempt=3, script_path=str(attempt_dir / "candidate.py"),
+                         cv_scores={"mae": mae}, fold_scores=list(folds))
+
+
+def test_a_model_worse_than_the_baseline_cannot_be_selected(tmp_path):
+    """The live run: mlp at cv mae 2.26e9 against a median baseline of 1,335 stayed clean."""
+    from utils.reusable.guards import check_attempt
+
+    context = _context(tmp_path)
+    record = _scored(tmp_path, 4.11e9, [12338593475.9, 7656.7, 977.8])
+    record.findings = check_attempt(record, context)
+
+    severities = {f.kind: f.severity for f in record.findings}
+    assert severities["worse_than_baseline"] == "blocking"
+    assert severities["unstable_folds"] == "warning"
+    assert "fold 1" in next(f.message for f in record.findings if f.kind == "unstable_folds")
+    assert assess(record, [record], {})[0] == BLOCKED
+    assert ranked_eligible([record], context, {}) == []
+
+
+def test_steady_folds_raise_nothing_and_divergence_is_read_either_way(tmp_path):
+    from utils.reusable.guards import check_attempt
+
+    record = _scored(tmp_path, 990.0, [1010.0, 950.0, 1005.0])
+    assert check_attempt(record, _context(tmp_path)) == []
+
+    higher = _context(tmp_path, primary_metric="r2", metric_direction="higher", eval_matrics=["r2"],
+                      improvement_metric="r2",
+                      baseline={"strategy": "median", "applicable": True, "cv_scores": {"r2": -0.01}})
+    diverged = record.model_copy(update={"cv_scores": {"r2": -5.0}, "fold_scores": [0.31, 0.29, -6.1e4]})
+    assert [f.kind for f in check_attempt(diverged, higher)] == ["worse_than_baseline", "unstable_folds"]
+
+
+def test_only_a_loss_to_an_exclusion_earns_the_extra_generation(tmp_path):
+    """The live run: mlp never beat the baseline, the leakage screen had excluded
+    units and unit_price, and mlp was given a fifth generation for a leak it never used."""
+    context = _context(tmp_path, max_tries=4)
+    add_exclusions(tmp_path, ["units"], {"reason": "leakage screen"})
+    losing = Finding(kind="worse_than_baseline", severity="blocking", message="worse than the baseline")
+    state = {"context": context, "model": "mlp", "generation": 4}
+
+    honest_but_bad = [_record(n, 3000.0, findings=[losing], excluded=["units"]) for n in range(1, 5)]
+    assert loop.decide({**state, "attempts": honest_but_bad})["status"] == "max_tries"
+
+    leaked = [_record(n, 600.0, excluded=[]) for n in range(1, 5)]
+    decision = loop.decide({**state, "attempts": leaked})
+    assert decision["status"] == "running" and decision["extension_used"]
+
+
+def test_the_report_carries_the_winners_fold_scores(tmp_path):
+    from models import ModelResult
+    from utils.reusable.report import build_report
+
+    winner = _record(2, 601.0, fold_scores=[590.0, 612.0, 601.0])
+    result = ModelResult(model="ridge", status="max_tries", attempts=[winner], best_attempt=2,
+                         best_cv_scores={"mae": 601.0})
+    assert build_report([result], _context(tmp_path)).comparison[0].fold_scores == [590.0, 612.0, 601.0]

@@ -214,6 +214,46 @@ def test_a_candidate_that_outgrows_its_ceiling_comes_back_as_out_of_memory(tmp_p
 
     assert record.status == "out_of_memory"
     assert "Make the model smaller" in record.traceback
+    # stopped from outside, it wrote no result; the stage it reached comes from its own announcements
+    assert record.traceback.startswith("[stage: import]\n")
+
+
+def test_the_final_run_keeps_the_loop_record_of_its_attempt(tmp_path):
+    """The final run reuses the attempt's directory, and its record, with no
+    cross-validation scores, used to replace the loop's."""
+    import json
+
+    from code_gen_eval.runner import run_candidate
+    from tests.test_leakage import DYNAMIC, _leaky_run
+
+    context = _leaky_run(tmp_path, target="noisy")
+    code = DYNAMIC.replace("TransformedTargetRegressor(regressor=model, func=np.log, inverse_func=np.exp)", "model")
+
+    loop_record = run_candidate(code, "linear_regression", 1, context)
+    final_record = run_candidate(code, "linear_regression", 1, context, final=True)
+
+    attempt = tmp_path / "linear_regression" / "attempt_1"
+    assert loop_record.cv_scores and final_record.test_scores
+    assert json.loads((attempt / "record.json").read_text(encoding="utf-8"))["cv_scores"] == loop_record.cv_scores
+    assert json.loads((attempt / "record_final.json").read_text(encoding="utf-8"))["test_scores"]
+    assert not final_record.warnings and (attempt / "load_check.json").exists()
+
+
+def test_a_load_check_stopped_for_memory_keeps_the_test_scores(tmp_path):
+    """The live run: a 131 MB random forest fitted and scored within 383 MB, then
+    the load check, run inside the evaluator, was stopped and took the scores with it."""
+    from code_gen_eval.runner import _check_model, run_candidate
+    from tests.test_leakage import DYNAMIC, _leaky_run
+
+    context = _leaky_run(tmp_path, target="noisy")
+    code = DYNAMIC.replace("TransformedTargetRegressor(regressor=model, func=np.log, inverse_func=np.exp)", "model")
+    scored = run_candidate(code, "linear_regression", 1, context, final=True)
+    attempt = tmp_path / "linear_regression" / "attempt_1"
+
+    warnings = _check_model(context, attempt, "subprocess", ceiling=20)
+
+    assert scored.test_scores
+    assert len(warnings) == 1 and "could not be verified" in warnings[0] and "test scores stand" in warnings[0]
 
 
 def test_the_ceiling_is_never_below_the_plan(monkeypatch):

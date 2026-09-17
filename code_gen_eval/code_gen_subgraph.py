@@ -19,10 +19,10 @@ from code_gen_eval.runner import attempt_dir, run_candidate
 from utils.prompts.code_gen_prompt import code_gen_prompt
 from utils.prompts.code_fixer import code_fixer_prompt
 from utils.prompts.code_judge import code_judge_prompt
-from utils.reusable.eligibility import TIER_NAMES, assess, ranked_eligible, replay
+from utils.reusable.eligibility import TIER_NAMES, assess, ranked_eligible, replay, used_excluded
 from utils.reusable.guards import check_final
 from utils.reusable.leakage import add_exclusions, columns_to_ablate, judge_ablation, read_exclusions
-from utils.reusable.lessons import error_signature, read_lessons, record_lesson, render_lessons
+from utils.reusable.lessons import error_signature, raised, ran, read_lessons, record_lesson, render_lessons
 from utils.reusable.llm import message_text
 from utils.reusable.requirements import render_requirements, requirements_for
 
@@ -46,6 +46,17 @@ def execution_cap(context: RunContext) -> int:
 # is too expensive, and cutting its cost is a modelling decision for the judge.
 # A run that raised and then hung comes back as "error", not "timeout".
 BROKEN = ("error", "syntax_error")
+
+
+def _broken(record: AttemptRecord) -> bool:
+    """A failure the fixer can act on, and whose fix is a lesson for the run.
+
+    A MemoryError raised inside the evaluator belongs here too: its traceback
+    names the call that asked for too much, a dense one-hot or a pairwise
+    matrix, and the repair is mechanical. A process stopped from outside for its
+    size names nothing; making the model smaller is the judge's decision.
+    """
+    return record.status in BROKEN or (record.status == "out_of_memory" and raised(record))
 
 # what every candidate has to contain to be worth evaluating; checked before an
 # attempt is spent, and explained to the model in these words when it is not
@@ -311,9 +322,10 @@ def run_code(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
 
     # an attempt that cleared the stage the previous one failed at, whether a
     # repair or a new generation after repairs ran out, is a fix every worker
-    # should know
-    failed = _latest(state.get("attempts", []))
-    if failed is not None and failed.status in BROKEN:
+    # should know. A repair that produced no module ran nothing, so the failure
+    # being fixed is the last one a candidate actually ran into.
+    failed = next((a for a in reversed(state.get("attempts", [])) if a.kind != "ablation" and ran(a)), None)
+    if failed is not None and _broken(failed):
         lesson = record_lesson(context.run_dir, state["model"], failed, record)
         if lesson:
             print(f"[{state['model']}] lesson: {lesson['signature'][:100]} -> {lesson['fix'][:80]}")
@@ -410,7 +422,7 @@ def route_after_run(state: CodeGenSubgraphState) -> str:
     record = state["attempts"][-1]
     attempts = state["attempts"]
     if (
-        record.status in BROKEN
+        _broken(record)
         and state.get("repairs", 0) < MAX_REPAIRS
         # a repair that changed nothing about the error will not fix it on a second go
         and not _stuck(record, attempts)
@@ -603,7 +615,14 @@ def decide(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
         status = "execution_cap"
         print(f"[{state['model']}] stopped at {_executions(attempts)} candidate runs (cap {execution_cap(context)})")
     elif state.get("generation", 1) >= context.max_tries:
-        if best_attempt is None and exclusions and not extension_used:
+        # only an attempt that scored on a column excluded since earns the extra
+        # generation. Checking that exclusions merely exist gave one to a model
+        # that never beat the baseline and one that never scored at all.
+        lost_to_exclusion = any(
+            used_excluded(record, exclusions) for record in attempts
+            if record.kind != "ablation" and record.status in ("ok", "cached") and record.cv_scores
+        )
+        if best_attempt is None and lost_to_exclusion and not extension_used:
             # every attempt that scored used a column excluded since; one more
             # generation builds without it rather than ending with nothing
             status, extension_used = "running", True

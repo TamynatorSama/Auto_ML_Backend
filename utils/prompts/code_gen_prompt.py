@@ -206,12 +206,33 @@ what the next attempt needs.
 ## `fit_params`, only when you need it
 
 Define `fit_params(ctx)` only for model-specific fit arguments such as early
-stopping. `ctx` is a `FitContext` with `X_train`, `y_train`, `X_valid`,
-`y_valid` carved from the fold's own training rows, plus `n_jobs`, `seed`,
-`classes`. If it returns a non-empty dict, the estimator is fitted on `X_train`
-only, so the validation rows stay out of the fit. Keys for a step inside a
-Pipeline need the step prefix, e.g. `{"model__eval_set": [...]}`, and anything
-you pass for validation must already be transformed the way that step sees it.
+stopping. It returns keyword arguments for the fit of the **final estimator**:
+the model at the end of your pipeline, inside any `TransformedTargetRegressor`.
+Write the keys without a step prefix; the harness routes them through the
+pipeline. `ctx` is a `FitContext`:
+
+```
+ctx.X_valid, ctx.y_valid          validation rows exactly as the final estimator
+                                  receives them: through every pipeline step before
+                                  it (fitted on ctx.X_train) and, under a
+                                  TransformedTargetRegressor, with the target
+                                  transformed. Pass them to an eval set as they are.
+ctx.X_valid_raw, ctx.y_valid_raw  the same rows as the pipeline's input
+ctx.X_train, ctx.y_train          the rows the estimator is fitted on
+ctx.final_estimator               class name of the estimator the arguments reach
+ctx.n_jobs, ctx.seed, ctx.classes
+```
+
+```python
+def fit_params(ctx):
+    return {"eval_set": [(ctx.X_valid, ctx.y_valid)]}
+```
+
+Set the early-stopping option wherever the installed version of the library
+takes it (constructor or fit). Never transform validation rows yourself, and
+never apply the target transform to `ctx.y_valid` again. The validation rows
+come out of the fold's own training rows; when `fit_params` returns a non-empty
+dict the estimator is fitted on `X_train` only, so they stay out of the fit.
 Most models do not need this; estimators with built-in validation
 (`HistGradientBoosting*` with `early_stopping=True`) are simpler.
 

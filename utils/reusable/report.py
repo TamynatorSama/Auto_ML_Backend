@@ -111,6 +111,7 @@ def _artifacts(record: Optional[AttemptRecord]) -> Dict[str, str]:
 
 def _row(result: ModelResult) -> ScoreRow:
     generations = {r.generation for r in result.attempts if r.kind == "generate"}
+    winner = _winner_record(result)
     note = result.error
     if result.eligibility != "clean" and result.eligibility_note:
         note = f"{result.eligibility}: {result.eligibility_note}" + (f"; {note}" if note else "")
@@ -119,13 +120,14 @@ def _row(result: ModelResult) -> ScoreRow:
         status=result.status,
         test_scores=result.test_scores,
         cv_scores=result.best_cv_scores,
+        fold_scores=list(winner.fold_scores) if winner else [],
         generations=len(generations),
         repairs=sum(1 for r in result.attempts if r.kind == "repair"),
         # a leak check that ran nothing is a verdict, not an execution
         executions=sum(1 for r in result.attempts if r.status != "skipped"),
         best_attempt=result.best_attempt,
         wall_seconds=round(sum(r.wall_seconds or 0.0 for r in result.attempts), 1),
-        artifacts=_artifacts(_winner_record(result)),
+        artifacts=_artifacts(winner),
         note=note,
         eligibility=result.eligibility,
     )

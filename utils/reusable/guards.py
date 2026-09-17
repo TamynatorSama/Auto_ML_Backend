@@ -21,6 +21,7 @@ Every check returns a Finding with a severity the selection rules act on:
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import List, Optional
 
@@ -40,6 +41,7 @@ NEAR_PERFECT_AUC = 0.995      # classes separated this completely
 CONCENTRATED_GAIN = 0.9       # share of the possible gain over the baseline
 CONCENTRATED_SHARE = 0.9      # share of the importance carried by...
 CONCENTRATED_COLUMNS = 2      # ...at most this many raw columns
+FOLD_DIVERGENCE = 10.0        # a fold this many times the typical fold's distance from perfect
 OOF_FILE = "oof_predictions.csv"
 IMPORTANCE_FILE = "feature_importance.csv"
 
@@ -81,6 +83,7 @@ def check_attempt(record: AttemptRecord, context: RunContext) -> List[Finding]:
         findings += _check_predictions(oof, context)
 
     findings += _check_against_baseline(context, cv)
+    findings += _check_folds(record, context)
     findings += _check_scale_free(record, context)
     findings += _check_concentration(record, context, cv)
     return _one_suspicion(findings)
@@ -137,6 +140,23 @@ def _check_predictions(oof: pd.DataFrame, context: RunContext) -> List[Finding]:
     return findings
 
 
+def _worse_than_baseline(context: RunContext, cv: float, floor: float) -> Finding:
+    """A model the baseline beats is not a model worth delivering.
+
+    It used to be a warning, and a network with one diverged fold, cv mae 2.3e9
+    against a median baseline of 1,335, stayed clean and selectable.
+    """
+    metric = context.primary_metric
+    return Finding(
+        kind="worse_than_baseline", severity="blocking",
+        message=(
+            f"cv {metric} {cv:.4g} is worse than the {context.baseline.strategy} baseline ({floor:.4g}), "
+            "so it cannot be selected: predicting the baseline would do better"
+        ),
+        evidence={"cv": cv, "baseline": floor},
+    )
+
+
 def _check_against_baseline(context: RunContext, cv: Optional[float]) -> List[Finding]:
     metric = context.primary_metric
     floor = context.baseline.cv_scores.get(metric)
@@ -145,10 +165,7 @@ def _check_against_baseline(context: RunContext, cv: Optional[float]) -> List[Fi
 
     if context.metric_direction == "lower":
         if cv > floor:
-            return [Finding(
-                kind="worse_than_baseline", severity="warning",
-                message=f"cv {metric} {cv:.4g} is worse than the {context.baseline.strategy} baseline ({floor:.4g})",
-            )]
+            return [_worse_than_baseline(context, cv, floor)]
         if cv * SUSPICIOUS_FACTOR < floor:
             factor = floor / max(cv, 1e-12)
             return [Finding(
@@ -162,10 +179,7 @@ def _check_against_baseline(context: RunContext, cv: Optional[float]) -> List[Fi
         return []
 
     if cv < floor:
-        return [Finding(
-            kind="worse_than_baseline", severity="warning",
-            message=f"cv {metric} {cv:.4g} is worse than the {context.baseline.strategy} baseline ({floor:.4g})",
-        )]
+        return [_worse_than_baseline(context, cv, floor)]
     if cv > NEAR_PERFECT:
         return [Finding(
             kind="suspect_leakage", severity="suspect",
@@ -176,6 +190,38 @@ def _check_against_baseline(context: RunContext, cv: Optional[float]) -> List[Fi
             evidence={"near_perfect": cv},
         )]
     return []
+
+
+def _check_folds(record: AttemptRecord, context: RunContext) -> List[Finding]:
+    """One fold far worse than the others.
+
+    Scores are pooled over every out-of-fold row, so a model that diverged on a
+    single fold reports that fold's error as its own: three folds of mae 12.3e9,
+    7,657 and 978 pooled to 4.1e9. The judge needs to know it is one fold, not a
+    uniformly useless model. Measured against the median of the other folds, so
+    the rule holds for any metric's scale.
+    """
+    scores = [(number, value) for number, value in enumerate(record.fold_scores, start=1)
+              if value is not None and math.isfinite(value)]
+    if len(scores) < 2:
+        return []
+
+    lower = context.metric_direction == "lower"
+    number, worst = (max if lower else min)(scores, key=lambda pair: pair[1])
+    others = float(np.median([value for fold, value in scores if fold != number]))
+    gap = (worst - others) if lower else (others - worst)
+    if others == 0 or gap <= FOLD_DIVERGENCE * abs(others):
+        return []
+
+    metric = context.primary_metric
+    return [Finding(
+        kind="unstable_folds", severity="warning",
+        message=(
+            f"fold {number} scored {metric} {worst:.4g} against a median of {others:.4g} on the other folds: "
+            "the model diverged there, and that one fold dominates the pooled score"
+        ),
+        evidence={"worst_fold": worst, "median_other_folds": others},
+    )]
 
 
 def _check_scale_free(record: AttemptRecord, context: RunContext) -> List[Finding]:

@@ -43,7 +43,14 @@ from typing import List, Optional
 import psutil
 
 from automl_runtime.contract import Contract
-from automl_runtime.evaluate import CONTRACT_FILE, FINAL_RESULT_FILE, RESULT_FILE
+from automl_runtime.evaluate import (
+    CONTRACT_FILE,
+    FINAL_RESULT_FILE,
+    LOAD_CHECK_FILE,
+    LOAD_CHECK_TIMEOUT,
+    MODEL_FILE,
+    RESULT_FILE,
+)
 from models import AttemptRecord, RunContext
 from utils.reusable.guards import check_attempt
 from utils.reusable.resources import memory_limit, wait_for_memory
@@ -121,14 +128,14 @@ def _environment() -> dict:
     return environment
 
 
-def _subprocess_command(context: RunContext, out_dir: Path, final: bool) -> list:
+def _subprocess_command(context: RunContext, out_dir: Path, final: bool, load_check: bool = False) -> list:
     command = [sys.executable, "-m", "automl_runtime.evaluate", "--attempt-dir", str(out_dir.resolve())]
-    if final:
-        command += ["--final", "--test", str(Path(context.test_path).resolve())]
+    if final or load_check:
+        command += ["--load-check" if load_check else "--final", "--test", str(Path(context.test_path).resolve())]
     return command
 
 
-def _docker_command(context: RunContext, out_dir: Path, final: bool) -> list:
+def _docker_command(context: RunContext, out_dir: Path, final: bool, load_check: bool = False) -> list:
     """One container per attempt: no network, capped cpu, memory and pids.
 
     The data, the frozen folds and the runtime are mounted read-only; only the
@@ -150,8 +157,8 @@ def _docker_command(context: RunContext, out_dir: Path, final: bool) -> list:
         DOCKER_IMAGE,
         "python", "-m", "automl_runtime.evaluate", "--attempt-dir", "/work",
     ]
-    if final:
-        command += ["--final", "--test", f"/data/{Path(context.test_path).name}"]
+    if final or load_check:
+        command += ["--load-check" if load_check else "--final", "--test", f"/data/{Path(context.test_path).name}"]
     return command
 
 
@@ -296,6 +303,16 @@ def _execute(command: list, cwd: Path, environment: dict, timeout: float, memory
     )
 
 
+_STAGE_MARK = re.compile(r"^\[stage: ([a-z_]+)\]\s*$", re.MULTILINE)
+
+
+def _stage_tag(stdout: str) -> str:
+    """`[stage: name]` for the last stage the evaluator announced, for a process
+    stopped before it could say where it failed."""
+    marks = _STAGE_MARK.findall(stdout or "")
+    return f"[stage: {marks[-1]}]\n" if marks else ""
+
+
 def _has_traceback(text: str) -> bool:
     return "Traceback (most recent call last)" in text or bool(
         re.search(r"^[A-Za-z_.]*(Error|Exception):", text, re.MULTILINE)
@@ -325,6 +342,47 @@ def _is_dependency_error(text: str, context: RunContext) -> bool:
         return match.group(1).split(".")[0] not in installed
 
     return False
+
+
+def _check_model(context: RunContext, out_dir: Path, backend: str, ceiling: float) -> List[str]:
+    """Open the saved model in a process of its own, once the final evaluation has exited.
+
+    Inside the evaluator the check was a second interpreter held against the
+    ceiling of the one that had just fitted the model, and stopping it lost test
+    scores that were already computed. Here the ceiling is held against loading
+    the model alone, and the scores stand whatever the check finds.
+    """
+    builder = _docker_command if backend == "docker" else _subprocess_command
+    command = builder(context, out_dir, False, load_check=True)
+    result_path = out_dir / LOAD_CHECK_FILE
+    result_path.unlink(missing_ok=True)
+
+    exit_code, stdout, stderr, _, _, timed_out, _, over_memory = _execute(
+        command, out_dir, _environment(), LOAD_CHECK_TIMEOUT, ceiling
+    )
+    (out_dir / "stdout_load_check.txt").write_text(stdout, encoding="utf-8")
+    (out_dir / "stderr_load_check.txt").write_text(stderr, encoding="utf-8")
+
+    if over_memory:
+        return [
+            f"{MODEL_FILE} could not be verified: opening it in a fresh process needed more than the "
+            f"{ceiling:.0f} MB an evaluator may use on this machine. The test scores stand; loading the "
+            "model may need a larger machine"
+        ]
+    if timed_out:
+        problem = f"loading it took longer than {LOAD_CHECK_TIMEOUT}s"
+    elif result_path.exists():
+        try:
+            checked = json.loads(result_path.read_text(encoding="utf-8"))
+        except (ValueError, OSError) as error:
+            checked = {"status": "error", "error": f"unreadable {LOAD_CHECK_FILE}: {error}"}
+        if checked.get("status") == "ok":
+            return []
+        problem = checked.get("error") or "unknown error"
+    else:
+        tail = stderr.strip().splitlines()
+        problem = tail[-1][:240] if tail else f"the check exited with code {exit_code}"
+    return [f"{MODEL_FILE} cannot be loaded in a fresh process ({problem}); it is not usable as a deliverable"]
 
 
 # ---------------------------------------------------------------------------
@@ -540,8 +598,8 @@ def _apply_result(record: AttemptRecord, result: dict, context: RunContext) -> N
         record.fold_scores = list(result.get("fold_scores") or [])
         return
 
-    if status == "timeout":
-        record.status = "timeout"
+    if status in ("timeout", "out_of_memory"):
+        record.status = status
     elif stage == "harness":
         record.status = "error"
     else:
@@ -578,6 +636,9 @@ def run_candidate(
 
     candidate_path = out_dir / CANDIDATE_FILE
     candidate_path.write_text(code, encoding="utf-8")
+    # the final run re-uses the loop attempt's directory; its record must not
+    # replace the one holding that attempt's cross-validation
+    record_file = out_dir / ("record_final.json" if final else "record.json")
     # the same module on a different set of columns is a different experiment
     excluded = _excluded(context, extra_excluded)
     fingerprint = code + NEWLINE + "# excluded: " + ",".join(sorted(excluded))
@@ -587,7 +648,7 @@ def run_candidate(
     if not final and prior_attempts:
         cached = _cached_record(out_dir, digest, attempt, prior_attempts, generation, kind)
         if cached is not None:
-            (out_dir / "record.json").write_text(cached.model_dump_json(indent=2), encoding="utf-8")
+            record_file.write_text(cached.model_dump_json(indent=2), encoding="utf-8")
             return cached
 
     record = AttemptRecord(
@@ -607,7 +668,7 @@ def run_candidate(
             "dependency_error" if blocked.startswith("imports not available") else "error"
         )
         record.traceback = f"[stage: preflight]\n{blocked}"
-        (out_dir / "record.json").write_text(record.model_dump_json(indent=2), encoding="utf-8")
+        record_file.write_text(record.model_dump_json(indent=2), encoding="utf-8")
         print(f"  preflight: {blocked}")
         return record
 
@@ -643,12 +704,14 @@ def run_candidate(
     record.stdout = stdout[-STDOUT_KEPT:]
     record.wall_seconds = round(wall_seconds, 3)
     record.peak_memory_mb = round(peak_mb, 1)
+    # where a process that never wrote its result had got to
+    reached = _stage_tag(stdout)
 
     if over_memory:
         # a resource failure, not a bug: it goes to the judge, who can make the
         # model smaller, not to the fixer
         record.status = "out_of_memory"
-        record.traceback = (
+        record.traceback = reached + (
             f"stopped when its processes held more than the {ceiling:.0f} MB this evaluator may use on "
             "this machine. Make the model smaller rather than asking for more: fewer or shallower trees "
             "(max_depth, min_samples_leaf, max_leaf_nodes), fewer estimators, a subsample, or a cheaper "
@@ -665,13 +728,13 @@ def run_candidate(
         # it raised and then sat there, typically a joblib worker taking the
         # parent down with it. The error is the result.
         record.status = "dependency_error" if _is_dependency_error(stderr, context) else "error"
-        record.traceback = (
+        record.traceback = reached + (
             f"raised after {record.wall_seconds}s and did not exit, so it was stopped:\n"
             + stderr[-STDOUT_KEPT:]
         )
     elif timed_out:
         record.status = "timeout"
-        note = f"killed after {hard_limit:.0f}s (time budget {context.time_budget_seconds}s)"
+        note = f"{reached}killed after {hard_limit:.0f}s (time budget {context.time_budget_seconds}s)"
         if _has_traceback(stderr):
             note += (
                 "\nthe process also reported errors before it was stopped, so this may be a "
@@ -682,10 +745,13 @@ def run_candidate(
         # no result at all: the interpreter itself died (out of memory, a crash
         # in native code) before the evaluator could write anything
         record.status = "error"
-        record.traceback = (
+        record.traceback = reached + (
             f"the evaluator exited with code {exit_code} without writing {result_path.name}; "
             f"peak memory {record.peak_memory_mb:.0f} MB.\n" + stderr[-STDOUT_KEPT:]
         )
+
+    if final and record.status == "ok" and "model" in record.artifacts:
+        record.warnings += _check_model(context, out_dir, backend, ceiling)
 
     if record.status == "ok" and not final:
         # a clean evaluation is not the same as a trustworthy one. Final runs
@@ -695,5 +761,5 @@ def run_candidate(
         for finding in record.findings:
             print(f"  guard [{finding.severity}]: {finding.message}")
 
-    (out_dir / "record.json").write_text(record.model_dump_json(indent=2), encoding="utf-8")
+    record_file.write_text(record.model_dump_json(indent=2), encoding="utf-8")
     return record

@@ -17,6 +17,7 @@ no clean attempt exists. Eligibility is recomputed from the whole history every
 time, so a column excluded late, even by another model's worker, retroactively
 blocks every attempt that used it.
 
+    used_excluded(record, exclusions)         -> columns
     assess(record, attempts, exclusions)      -> (tier, reason)
     replay(attempts, context, exclusions)     -> (best_attempt, best_score, patience)
     ranked_eligible(attempts, context, exclusions) -> list of (tier, record)
@@ -41,12 +42,17 @@ def _leak_check(record: AttemptRecord, attempts: List[AttemptRecord]) -> Optiona
     return checks[-1] if checks else None
 
 
+def used_excluded(record: AttemptRecord, exclusions: Dict[str, dict]) -> List[str]:
+    """Columns excluded from the run that this attempt still trained on."""
+    return sorted(column for column in exclusions if column not in record.excluded_columns)
+
+
 def assess(record: AttemptRecord, attempts: List[AttemptRecord], exclusions: Dict[str, dict]) -> Tuple[int, str]:
     blocking = [f for f in record.findings if f.severity == "blocking"]
     if blocking:
         return BLOCKED, blocking[0].message
 
-    used = sorted(column for column in exclusions if column not in record.excluded_columns)
+    used = used_excluded(record, exclusions)
     if used:
         reason = exclusions[used[0]].get("reason", "excluded by a leak check")
         return BLOCKED, f"trained on {', '.join(used)}, excluded from the run since: {reason}"

@@ -248,7 +248,18 @@ def test_final_mode_scores_the_test_set_and_saves_a_loadable_model(tmp_path):
     assert result["test_scores"]["r2"] > 0.9
     assert (attempt / "test_predictions.csv").exists()
     assert (attempt / "model.joblib").exists()
-    assert not any("cannot be loaded" in warning for warning in result["warnings"])
+
+    # opened by a process of its own, after the final evaluation has exited
+    command = [sys.executable, "-m", "automl_runtime.evaluate", "--attempt-dir", str(attempt),
+               "--load-check", "--test", str(test_path)]
+    subprocess.run(command, cwd=str(ROOT), capture_output=True, text=True, timeout=300, check=True)
+    assert json.loads((attempt / "load_check.json").read_text(encoding="utf-8"))["status"] == "ok"
+
+    # without the module that defines Clip, the pickle cannot be resolved
+    (attempt / "candidate.py").unlink()
+    subprocess.run(command, cwd=str(ROOT), capture_output=True, text=True, timeout=300, check=True)
+    checked = json.loads((attempt / "load_check.json").read_text(encoding="utf-8"))
+    assert checked["status"] == "error" and "candidate" in checked["error"]
 
 
 def test_excluded_columns_are_invisible_to_the_candidate(tmp_path):
@@ -292,3 +303,111 @@ def test_category_cleaner_merges_case_and_spacing_variants():
     assert cleaned["plan"].tolist()[:3] == ["basic", "basic", "basic"]
     assert pd.isna(cleaned["plan"].iloc[3])
     assert cleaned["plan"].iloc[4] == "pro plan"
+
+
+# ---------------------------------------------------------------------------
+# fit_params: validation rows as the final estimator receives them
+# ---------------------------------------------------------------------------
+
+# a final estimator that fails loudly unless its eval set looks like its own
+# training input: numeric (the date strings went through DateParts), as wide,
+# and with the target on the transformed scale
+EARLY_STOPPING_CANDIDATE = """
+    import numpy as np
+    from sklearn.base import BaseEstimator, RegressorMixin
+    from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
+    from sklearn.linear_model import Ridge
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+    from automl_runtime import DateParts, names
+
+
+    class Probe(BaseEstimator, RegressorMixin):
+        def fit(self, X, y, eval_set=None):
+            X_valid, y_valid = eval_set[0]
+            X_valid = np.asarray(X_valid, dtype=float)
+            assert X_valid.shape[1] == np.asarray(X).shape[1], (X_valid.shape, np.asarray(X).shape)
+            assert abs(np.median(y_valid) - np.median(y)) < 1.0, (np.median(y_valid), np.median(y))
+            self.model_ = Ridge().fit(X, y)
+            return self
+
+        def predict(self, X):
+            return self.model_.predict(X)
+
+
+    def build_pipeline(columns, task, ctx):
+        steps = [("num", StandardScaler(), names(columns, "numeric", "discrete_numeric")),
+                 ("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False), names(columns, "categorical")),
+                 ("date", DateParts(parts=("year", "month")), names(columns, "datetime"))]
+        target = TransformedTargetRegressor(regressor=Probe(), func=np.log1p, inverse_func=np.expm1)
+        return Pipeline([("prep", ColumnTransformer(steps)), ("model", target)])
+
+
+    def fit_params(ctx):
+        assert ctx.final_estimator == "Probe", ctx.final_estimator
+        assert ctx.X_valid_raw.shape[0] == len(ctx.X_valid)
+        return {"eval_set": [(ctx.X_valid, ctx.y_valid)]}
+"""
+
+
+def test_fit_params_get_validation_rows_through_the_pipeline_and_the_target_transform(tmp_path):
+    """The live run: catboost was handed raw date strings in its eval_set, and the
+    key had to be guessed through a TransformedTargetRegressor."""
+    attempt, _ = _prepare(tmp_path, _regression_frame(), "price", "regression", ["mae"], EARLY_STOPPING_CANDIDATE,
+                          excluded=["row_id"])
+    result = _evaluate(attempt)
+
+    assert result["status"] == "ok", result["error"]
+
+
+def test_routing_finds_the_final_estimator_through_any_nesting():
+    from sklearn.compose import TransformedTargetRegressor
+    from sklearn.linear_model import Ridge
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    from automl_runtime.validation import route, route_params
+
+    assert route(Ridge()) == ("", "Ridge")
+    assert route(Pipeline([("scale", StandardScaler()), ("model", TransformedTargetRegressor(Ridge()))])) == (
+        "model__", "Ridge")
+    inner = Pipeline([("scale", StandardScaler()), ("booster", Ridge())])
+    assert route(TransformedTargetRegressor(regressor=inner, func=np.log1p, inverse_func=np.expm1)) == (
+        "booster__", "Ridge")
+
+    assert route_params({"eval_set": 1, "scale__copy": 2}, "model__") == {"model__eval_set": 1, "scale__copy": 2}
+
+
+def test_preparing_validation_rows_leaves_the_estimator_unfitted():
+    from sklearn.compose import TransformedTargetRegressor
+    from sklearn.linear_model import Ridge
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    from automl_runtime.validation import for_final_estimator
+
+    rng = np.random.default_rng(0)
+    X = pd.DataFrame({"a": rng.normal(50, 10, 200), "b": rng.normal(-3, 2, 200)})
+    y = pd.Series(np.exp(rng.normal(3, 0.5, 200)))
+    scale = StandardScaler()
+    estimator = TransformedTargetRegressor(regressor=Pipeline([("scale", scale), ("model", Ridge())]),
+                                           func=np.log, inverse_func=np.exp)
+
+    X_valid, y_valid = for_final_estimator(estimator, X.iloc[:150], y.iloc[:150], X.iloc[150:], y.iloc[150:])
+
+    assert not hasattr(scale, "mean_")
+    assert np.allclose(np.asarray(X_valid), StandardScaler().fit(X.iloc[:150]).transform(X.iloc[150:]))
+    assert np.allclose(y_valid, np.log(y.iloc[150:]))
+
+
+def test_a_memory_error_is_reported_as_out_of_memory_at_its_stage(tmp_path):
+    candidate = """
+        def build_pipeline(columns, task, ctx):
+            raise MemoryError("Unable to allocate 27.5 GiB for an array with shape (60000, 61000)")
+    """
+    attempt, _ = _prepare(tmp_path, _regression_frame(), "price", "regression", ["mae"], candidate)
+    result = _evaluate(attempt)
+
+    assert (result["status"], result["stage"]) == ("out_of_memory", "build")
+    assert "Unable to allocate" in result["error"]

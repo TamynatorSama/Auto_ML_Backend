@@ -41,6 +41,7 @@ class ScoreRow(BaseModel):
     selected: bool = False
     test_scores: Dict[str, float] = {}
     cv_scores: Dict[str, float] = {}
+    fold_scores: List[Optional[float]] = []  # primary metric by fold, for the cv score above
     generations: int = 0        # modelling attempts
     repairs: int = 0            # fixes that did not spend a modelling attempt
     executions: int = 0         # every script run, generations and repairs together

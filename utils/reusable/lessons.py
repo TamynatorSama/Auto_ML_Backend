@@ -16,6 +16,7 @@ judge and fixer prompt in the run then carries the list.
 
     error_signature(record)                 -> str | None
     got_past(failed, repaired)              -> bool
+    ran(record) / raised(record)            -> bool
     record_lesson(run_dir, model, failed, repaired) -> dict | None
     read_lessons(run_dir) / render_lessons(lessons)
 """
@@ -80,13 +81,33 @@ def _stage_index(record: AttemptRecord) -> int:
 
 
 def got_past(failed: AttemptRecord, repaired: AttemptRecord) -> bool:
-    """Did the repair clear the stage the failure stopped at?"""
+    """Did the repair clear the stage the failure stopped at?
+
+    However the repaired attempt ended. One stopped for its memory or its time
+    at a later stage still ran past the error, and the fix is what every other
+    model needs to know; the stop is a separate problem with the model's size.
+    """
     if repaired.status in ("ok", "cached"):
         return True
-    if repaired.status not in ("error", "syntax_error"):
-        return False
     before, after = _stage_index(failed), _stage_index(repaired)
     return before >= 0 and after > before
+
+
+def ran(record: AttemptRecord) -> bool:
+    """A candidate was actually evaluated.
+
+    A generation or repair that produced no usable module is recorded as an
+    error with no stage. It says nothing about the libraries, and taken as the
+    failure a later attempt fixed, it became a lesson whose error was a line of
+    code and whose fix was "initial implementation".
+    """
+    return record.status not in ("error", "syntax_error") or stage_of(record) is not None
+
+
+def raised(record: AttemptRecord) -> bool:
+    """The failure is an exception the candidate's own code raised, as opposed to
+    a stop imposed from outside, which names no line and no call."""
+    return any(_EXCEPTION.match(line.strip()) for line in (record.traceback or "").splitlines())
 
 
 def read_lessons(run_dir: str | Path) -> List[dict]:
@@ -104,7 +125,7 @@ def record_lesson(
 ) -> Optional[dict]:
     """Write down a fix that worked, once per distinct error."""
     signature = error_signature(failed)
-    if signature is None or not got_past(failed, repaired):
+    if signature is None or not ran(failed) or not got_past(failed, repaired):
         return None
 
     fix = (repaired.changes or "").removeprefix("repair:").strip()

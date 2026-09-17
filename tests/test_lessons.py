@@ -129,3 +129,63 @@ def test_a_new_generation_that_clears_the_failed_stage_also_teaches(tmp_path):
 
     lessons = read_lessons(context.run_dir)
     assert len(lessons) == 1 and lessons[0]["stage"] == "smoke"
+
+
+# ---------------------------------------------------------------------------
+# memory stops and timeouts
+# ---------------------------------------------------------------------------
+
+KILLED = "stopped when its processes held more than the 625 MB this evaluator may use on this machine."
+
+
+def test_a_repair_stopped_for_memory_after_the_failed_stage_still_teaches(tmp_path):
+    """The live run: extra_trees fixed its SimpleImputer import, then hit its memory
+    ceiling in cross-validation, and mlp repeated the import error."""
+    failed = _failed(1, IMPORT_ERROR.format(n=1, line=6), model="extra_trees")
+    stopped = _failed(2, f"[stage: cv]\n{KILLED}", kind="repair", status="out_of_memory", model="extra_trees")
+    stopped.changes = "repair: SimpleImputer is imported from sklearn.impute"
+    timed_out = _failed(2, "[stage: budget]\nfold 1 took 900s", kind="repair", status="timeout")
+
+    assert got_past(failed, stopped) and got_past(failed, timed_out)
+    assert not got_past(failed, _failed(2, KILLED, kind="repair", status="out_of_memory"))
+    lesson = record_lesson(tmp_path, "extra_trees", failed, stopped)
+    assert lesson["fix"] == "SimpleImputer is imported from sklearn.impute"
+
+
+def test_a_repair_that_produced_no_module_is_not_the_failure_a_lesson_is_about(tmp_path):
+    """The live run: the fixer's edits did not apply, the next generation scored, and
+    the lesson read "error: ('onehot', OneHotEncoder(...)) -> initial implementation"."""
+    from tests.test_leakage import DYNAMIC, _leaky_run
+
+    context = _leaky_run(tmp_path, target="noisy")
+    code = DYNAMIC.replace("TransformedTargetRegressor(regressor=model, func=np.log, inverse_func=np.exp)", "model")
+    sparse = _failed(2, "[stage: build]\nTypeError: OneHotEncoder.__init__() got an unexpected keyword argument 'sparse'",
+                     kind="repair", model="ridge")
+    no_module = _failed(3, "the fixer returned no usable script: SEARCH block 1 matches 2 places\n"
+                           "    ('onehot', OneHotEncoder(handle_unknown='ignore', sparse=False))",
+                        kind="repair", model="ridge")
+    state = {"context": context, "model": "linear_regression", "attempts": [sparse, no_module], "attempt": 4,
+             "generation": 2, "repairs": 0, "current_code": code, "changes": "OneHotEncoder takes sparse_output"}
+
+    assert record_lesson(tmp_path / "direct", "ridge", no_module, sparse) is None
+    loop.run_code(state)
+
+    lessons = read_lessons(context.run_dir)
+    assert [lesson["stage"] for lesson in lessons] == ["build"]
+    assert "sparse" in lessons[0]["signature"] and lessons[0]["fix"] == "OneHotEncoder takes sparse_output"
+
+
+def test_a_memory_error_goes_to_the_fixer_and_a_memory_stop_to_the_judge(tmp_path):
+    from tests.test_leakage import _context
+
+    context = _context(tmp_path)
+    allocation = _failed(
+        1,
+        "[stage: cv]\nTraceback (most recent call last):\n  File \"x.py\", line 3, in fit\n"
+        "numpy._core._exceptions._ArrayMemoryError: Unable to allocate 27.5 GiB for an array",
+        status="out_of_memory", model="ridge",
+    )
+    stopped = _failed(1, f"[stage: cv]\n{KILLED}", status="out_of_memory", model="extra_trees")
+
+    assert loop.route_after_run({"context": context, "attempts": [allocation], "repairs": 0}) == "fix_code"
+    assert loop.route_after_run({"context": context, "attempts": [stopped], "repairs": 0}) == "judge"

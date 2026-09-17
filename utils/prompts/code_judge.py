@@ -54,7 +54,11 @@ Work down this list and stop at the first that applies.
    `most_frequent` is structurally broken, not undertuned. Look for unscaled
    features with extreme ranges, a skewed target, one-hot on a high-cardinality
    column, or a leaked column left in. Never respond to this with
-   hyperparameters.
+   hyperparameters. Such an attempt cannot be selected, however it compares
+   with other models. When one fold is far worse than the rest, the model
+   diverged on that fold, and that fold alone makes the pooled score look
+   useless: look for what makes fitting unstable, such as unscaled inputs or an
+   optimiser that did not converge.
 4. **A timeout, or out of memory.** An attempt stopped for memory says how
    much it used against its limit: the change must make the model smaller
    (shallower or fewer trees, a subsample, a cheaper encoding). The harness

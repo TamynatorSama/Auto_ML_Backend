@@ -6,6 +6,7 @@ decides what a score means.
 
     python -m automl_runtime.evaluate --attempt-dir DIR
     python -m automl_runtime.evaluate --attempt-dir DIR --final --test TEST_CSV
+    python -m automl_runtime.evaluate --attempt-dir DIR --load-check --test TEST_CSV
 
 Loop mode climbs a ladder of increasingly expensive checks and stops at the
 first failure, so a mechanical mistake costs seconds instead of a full
@@ -22,22 +23,20 @@ cross-validation:
     importance permutation importance on raw columns, when the budget allows
 
 Final mode fits on every training row, predicts the test file once, scores it,
-saves the model and opens it again in a fresh process.
+and saves the model. Load-check mode, run by the runner once final mode has
+exited, opens that model in a fresh process and predicts five test rows.
 
-Nothing escapes as an exception: every outcome is written to result.json (loop)
-or result_final.json (final), which is what the runner reads.
+Nothing escapes as an exception: every outcome is written to result.json (loop),
+result_final.json (final) or load_check.json, which is what the runner reads.
 """
 
 from __future__ import annotations
 
 import argparse
-import gc
 import json
 import math
 import pickle
-import subprocess
 import sys
-import tempfile
 import time
 import traceback
 from contextlib import contextmanager
@@ -51,6 +50,7 @@ from automl_runtime.candidate import (
     call_build,
     call_fit_params,
     import_candidate,
+    load_model,
     wants_fit_params,
 )
 from automl_runtime.columns import ColumnInfo, infer_kind
@@ -64,8 +64,7 @@ from automl_runtime.metrics import (
     is_classification,
     score_predictions,
 )
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+from automl_runtime.validation import for_final_estimator, route, route_params
 
 RESULT_FILE = "result.json"
 FINAL_RESULT_FILE = "result_final.json"
@@ -85,6 +84,7 @@ IMPORTANCE_BUDGET_SHARE = 0.25   # of the time still left
 BUDGET_MARGIN = 0.95             # a projection past this share of the budget stops the run
 ERROR_CHARS = 6000
 LOAD_CHECK_TIMEOUT = 300
+LOAD_CHECK_FILE = "load_check.json"
 
 PICKLE_HINT = (
     "the fitted estimator cannot be pickled, so it could never be saved as a model. "
@@ -110,8 +110,23 @@ def _describe(error: BaseException) -> str:
     return text[-ERROR_CHARS:]
 
 
+def _out_of_memory(error: BaseException) -> bool:
+    """A MemoryError, or an exception raised while handling one."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        if isinstance(error, MemoryError):
+            return True
+        seen.add(id(error))
+        error = error.__cause__ or error.__context__
+    return False
+
+
 @contextmanager
 def stage(name: str, timings: Dict[str, float]):
+    # announced before it runs: a process stopped from outside, for its memory
+    # or its time, writes no result, and this line is how the runner learns
+    # how far it got
+    print(f"[stage: {name}]", flush=True)
     started = time.perf_counter()
     try:
         yield
@@ -120,7 +135,8 @@ def stage(name: str, timings: Dict[str, float]):
     except PredictionProblem as problem:
         raise StageFailure(name, str(problem)) from problem
     except Exception as error:
-        raise StageFailure(name, _describe(error)) from error
+        status = "out_of_memory" if _out_of_memory(error) else "error"
+        raise StageFailure(name, _describe(error), status=status) from error
     finally:
         timings[name] = round(timings.get(name, 0.0) + time.perf_counter() - started, 3)
 
@@ -321,17 +337,25 @@ def _fit(estimator, module, rows: np.ndarray, contract: Contract, data: Data, rn
         return
 
     fit_rows, valid_rows = _validation_split(rows, contract, data, rng)
+    X_train, y_train = data.X.iloc[fit_rows], data.y.iloc[fit_rows]
+    X_valid, y_valid = data.X.iloc[valid_rows], data.y.iloc[valid_rows]
+    prefix, final_estimator = route(estimator)
     ctx = FitContext(
         task=contract.task_type,
         n_jobs=contract.n_jobs,
         seed=contract.seed,
-        X_train=data.X.iloc[fit_rows],
-        y_train=data.y.iloc[fit_rows],
-        X_valid=data.X.iloc[valid_rows],
-        y_valid=data.y.iloc[valid_rows],
+        X_train=X_train,
+        y_train=y_train,
+        X_valid_raw=X_valid,
+        y_valid_raw=y_valid,
+        final_estimator=final_estimator,
         classes=data.classes,
+        # transformers reject zero rows, and there is nothing to transform
+        prepare=(lambda: for_final_estimator(estimator, X_train, y_train, X_valid, y_valid))
+        if len(valid_rows) else None,
     )
-    params = call_fit_params(module, ctx)
+    # the candidate names arguments for the final estimator; the pipeline around it decides the prefix
+    params = route_params(call_fit_params(module, ctx), prefix)
     if params and len(valid_rows):
         # the candidate uses the validation rows, so they must stay out of the fit
         estimator.fit(ctx.X_train, ctx.y_train, **params)
@@ -560,28 +584,36 @@ def _loop(attempt_dir: Path, contract: Contract, result: dict, started: float) -
 # final mode
 # ---------------------------------------------------------------------------
 
-def _check_loads(attempt_dir: Path, test_path: str, columns: List[str]) -> Optional[str]:
-    """Open the saved model in a process that never imported the candidate."""
-    probe = (
-        "import sys\n"
-        f"sys.path.insert(0, {str(PROJECT_ROOT)!r})\n"
-        "import pandas as pd\n"
-        "from automl_runtime.candidate import load_model\n"
-        f"model = load_model({str(attempt_dir / MODEL_FILE)!r})\n"
-        f"frame = pd.read_csv({test_path!r}, nrows=5, low_memory=False)\n"
-        f"model.predict(frame[{columns!r}])\n"
-    )
+def check_model(attempt_dir: str | Path, test_path: str) -> dict:
+    """Open the saved model in a process that never imported the candidate, and
+    predict five test rows with it. Writes load_check.json.
+
+    It runs as a process of its own after the final evaluation has exited. Run
+    from inside the evaluator, it was a second interpreter held against the same
+    memory ceiling as the one that had just fitted the model: a 131 MB random
+    forest that fitted and scored within 383 MB was stopped there, and its test
+    scores, computed but not yet written, were lost with it.
+    """
+    from joblib import parallel_config
+
+    attempt_dir = Path(attempt_dir).resolve()
+    result = {"status": "ok", "error": ""}
+    started = time.perf_counter()
     try:
-        completed = subprocess.run(
-            [sys.executable, "-c", probe],
-            capture_output=True, text=True, timeout=LOAD_CHECK_TIMEOUT, cwd=tempfile.gettempdir(),
-        )
-    except subprocess.TimeoutExpired:
-        return f"loading it took longer than {LOAD_CHECK_TIMEOUT}s"
-    if completed.returncode == 0:
-        return None
-    tail = (completed.stderr or "").strip().splitlines()
-    return tail[-1][:240] if tail else "unknown error"
+        contract = Contract.load(attempt_dir / CONTRACT_FILE)
+        header = pd.read_csv(contract.train_path, nrows=0).columns
+        columns = [c for c in header if c != contract.target and c not in contract.excluded_columns]
+        model = load_model(attempt_dir / MODEL_FILE)
+        frame = pd.read_csv(test_path, nrows=5, low_memory=False)
+        # five rows need no pool of workers, whatever n_jobs the model was built with
+        with parallel_config(backend="sequential"):
+            model.predict(frame[columns])
+    except Exception as error:
+        tail = _describe(error).strip().splitlines()
+        result.update(status="error", error=tail[-1][:240] if tail else "unknown error")
+    result["wall_seconds"] = round(time.perf_counter() - started, 3)
+    (attempt_dir / LOAD_CHECK_FILE).write_text(json.dumps(result, indent=2), encoding="utf-8")
+    return result
 
 
 def _final(attempt_dir: Path, contract: Contract, test_path: str, result: dict) -> None:
@@ -660,21 +692,6 @@ def _final(attempt_dir: Path, contract: Contract, test_path: str, result: dict) 
 
     result["artifacts"]["model"] = MODEL_FILE
 
-    # the check starts a second interpreter while this one is still alive, and
-    # both count against the evaluator's memory ceiling: a model that fitted
-    # within it was being stopped here, holding the training frame, the test
-    # frame and itself for no reason. Everything the check needs is on disk.
-    columns = list(data.X.columns)
-    del estimator, data, test, X_test, y_test, y_true, predictions, scores
-    gc.collect()
-
-    with stage("load_check", timings):
-        problem = _check_loads(attempt_dir, test_path, columns)
-    if problem:
-        result["warnings"].append(
-            f"{MODEL_FILE} cannot be loaded in a fresh process ({problem}); it is not usable as a deliverable"
-        )
-
 
 # ---------------------------------------------------------------------------
 # entry point
@@ -730,7 +747,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--attempt-dir", required=True)
     parser.add_argument("--final", action="store_true")
     parser.add_argument("--test", default=None)
+    parser.add_argument("--load-check", action="store_true", help="open the saved model and predict five test rows")
     args = parser.parse_args(argv)
+
+    if args.load_check:
+        checked = check_model(args.attempt_dir, args.test)
+        print(f"load check {checked['status']}", flush=True)
+        return 0
 
     result = evaluate(args.attempt_dir, final=args.final, test_path=args.test)
     outcome = result["status"] if not result["stage"] else f"{result['status']} at {result['stage']}"

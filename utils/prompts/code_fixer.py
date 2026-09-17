@@ -52,6 +52,12 @@ def fit_params(ctx):                      # optional; returns a dict for fit()
 - The estimator receives a pandas DataFrame `X` with the original column names;
   dates arrive as strings. `from automl_runtime import DateParts,
   FrequencyEncoder` are available.
+- `fit_params(ctx)` returns arguments for the fit of the final estimator (the
+  model at the end of the pipeline, inside any `TransformedTargetRegressor`),
+  with unprefixed keys: the harness adds the step prefix. `ctx.X_valid` and
+  `ctx.y_valid` are already transformed exactly as that estimator receives
+  them, target transform included; pass them as they are.
+  `ctx.X_valid_raw` / `ctx.y_valid_raw` are the untransformed rows.
 
 ## Output
 
@@ -121,6 +127,15 @@ is not repairable here; say so on the changes line and change nothing else.
   Copy first.
 - `needs predicted probabilities` — use an estimator with `predict_proba`, e.g.
   `SVC(probability=True)`, or wrap it in `CalibratedClassifierCV`.
+- `MemoryError` / `Unable to allocate N GiB for an array` (status
+  out_of_memory) — the traceback names the call that built something far too
+  large, usually a dense matrix where a sparse one would do (`sparse_output=False`,
+  `.toarray()`, a pandas-output transformer around a wide one-hot). Keep that
+  representation sparse or narrower; do not change the model.
+- a raw value such as a date string rejected while fitting with an eval set,
+  or `unexpected keyword argument 'regressor__eval_set'` — the validation data
+  or the key prefix was built by hand in `fit_params`. Return
+  `{"eval_set": [(ctx.X_valid, ctx.y_valid)]}`: no prefix, no transform.
 
 ## Example
 

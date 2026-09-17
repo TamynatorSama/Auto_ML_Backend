@@ -32,7 +32,7 @@ class Finding(BaseModel):
     """Something a check concluded about an attempt, in a form the selection rules can act on."""
 
     kind: str           # constant_predictions | untransformed_target | missing_predictions |
-                        # no_primary_score | worse_than_baseline | suspect_leakage
+                        # no_primary_score | worse_than_baseline | suspect_leakage | unstable_folds
     severity: str       # blocking: cannot be selected | suspect: needs a leak check | warning
     message: str
     evidence: Dict[str, float] = {}
