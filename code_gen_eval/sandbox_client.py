@@ -3,13 +3,6 @@ sandbox_client.py
 -----------------
 Talks to a sandbox server (sandbox/DESIGN.md). One client per host; which host a
 run uses is the caller's choice, through hooks.sandbox_for.
-
-A host that cannot be reached is not an attempt failure. Such errors are retried
-with backoff and then raised as SandboxUnavailable, which stops the model
-without recording anything, so a resume trains it again.
-
-Everything the host sends back is untrusted: downloads are capped and extracted
-with tarfile's "data" filter.
 """
 
 from __future__ import annotations
@@ -19,7 +12,7 @@ import os
 import tarfile
 import time
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import Callable, Dict, Optional, Union
 
 import httpx
 
@@ -64,12 +57,17 @@ def tar_files(files: Dict[str, Union[bytes, Path]]) -> bytes:
 
 
 class SandboxClient:
-    def __init__(self, url: str, token: str, transport: Optional[httpx.BaseTransport] = None, sleep=time.sleep):
+    def __init__(self, url: str, token: str, transport: Optional[httpx.BaseTransport] = None, sleep=time.sleep,
+                 on_wait: Optional[Callable[[str, float], None]] = None):
         self.url = url.rstrip("/")
         self.http = httpx.Client(
-            base_url=self.url, headers={"Authorization": f"Bearer {token}"}, timeout=60, transport=transport
+            base_url=self.url, headers={"Authorization": f"Bearer {token}"}, timeout=60, transport=transport,
+            # drop idle connections before the server's 5 s keep-alive does, or a request can
+            # go out on a connection the server is closing, and a POST can't be retried
+            limits=httpx.Limits(keepalive_expiry=2),
         )
         self.sleep = sleep
+        self.on_wait = on_wait  # (problem, delay) before each retry of an unreachable host
 
     @classmethod
     def from_env(cls) -> "SandboxClient":
@@ -111,6 +109,8 @@ class SandboxClient:
             if delay is None:
                 raise SandboxUnavailable(f"sandbox host unreachable at {self.url}: {problem}")
             print(f"  sandbox host: {problem}; retrying in {delay}s", flush=True)
+            if self.on_wait:
+                self.on_wait(problem, delay)
             self.sleep(delay)
 
     def _json(self, method: str, path: str, retry: bool = True, **kwargs):
@@ -123,8 +123,8 @@ class SandboxClient:
 
     # ---- host
 
-    def info(self) -> dict:
-        return self._json("GET", "/v1/info")
+    def info(self, retry: bool = True) -> dict:
+        return self._json("GET", "/v1/info", retry)
 
     def capacity(self) -> dict:
         return self._json("GET", "/v1/capacity")
@@ -145,6 +145,10 @@ class SandboxClient:
                 raise
 
     # ---- sandboxes
+
+    def list_sandboxes(self, labels: dict) -> list:
+        params = [("label", f"{key}:{value}") for key, value in labels.items()]
+        return self._json("GET", "/v1/sandboxes", params=params)
 
     def create_sandbox(self, **spec) -> str:
         return self._json("POST", "/v1/sandboxes", json=spec)["id"]

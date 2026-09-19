@@ -18,6 +18,8 @@ class AutoMLState(TypedDict):
     run_dir: str
     # pause after planning until a person approves the plan (needs a checkpointer)
     review: bool
+    # subprocess (this machine) or sandbox (hooks.sandbox_for)
+    backend: str
     data_path: str
     schema: DataSchema
     full_summary: str

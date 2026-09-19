@@ -1,0 +1,19 @@
+# The platform's services on the server (docs/PHASE2.md §1). Phase 4 adds MinIO, Phase 6 the rest.
+#   docker compose -f deploy/compose.yaml up -d
+# The password is in /etc/automl/postgres.env (POSTGRES_PASSWORD=...), root:docker, mode 640.
+name: automl   # not "deploy": that is the sandbox server's project name
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    env_file: /etc/automl/postgres.env
+    environment:
+      POSTGRES_USER: automl
+      POSTGRES_DB: automl
+    ports:
+      - "127.0.0.1:5432:5432"   # localhost only; reached through the SSH tunnel
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

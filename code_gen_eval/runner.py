@@ -231,27 +231,33 @@ def _sandbox_execute(
         labels={"run": str(context.run_id), "model": out_dir.parent.name,
                 "attempt": out_dir.name.removeprefix("attempt_"), "step": step},
     )
-    try:
-        sandbox = client.create_sandbox(**spec, volume=_run_volume(client, context, data))
-    except SandboxError as error:
-        if error.status != 404:
-            raise
-        # the run's data expired on the host, or the host is new: upload it again
-        sandbox = client.create_sandbox(**spec, volume=_run_volume(client, context, data, fresh=True))
-
-    try:
-        client.put_files(sandbox, files)
-        exec_id = client.start_exec(sandbox, command, deadline)
-        status, stdout, stderr, died_after_error = _follow(client, sandbox, exec_id)
-        if status["state"] == "exited":
-            client.download(sandbox, out_dir)
-    except BaseException:
+    # held from create to delete: in the worker, other jobs' sandboxes queue for the same host
+    with hooks.sandbox_slot(context.run_id, spec["memory_mb"], spec["cpus"]):
         try:
-            client.delete_sandbox(sandbox, retry=False)
-        except (SandboxError, SandboxUnavailable):
-            pass  # the host's reaper removes it when its TTL runs out
-        raise
-    usage = client.delete_sandbox(sandbox)
+            sandbox = client.create_sandbox(**spec, volume=_run_volume(client, context, data))
+        except SandboxError as error:
+            if error.status != 404:
+                raise
+            # the run's data expired on the host, or the host is new: upload it again
+            sandbox = client.create_sandbox(**spec, volume=_run_volume(client, context, data, fresh=True))
+
+        try:
+            client.put_files(sandbox, files)
+            exec_id = client.start_exec(sandbox, command, deadline)
+            status, stdout, stderr, died_after_error = _follow(client, sandbox, exec_id)
+            if status["state"] == "exited":
+                client.download(sandbox, out_dir)
+        except BaseException:
+            try:
+                client.delete_sandbox(sandbox, retry=False)
+            except (SandboxError, SandboxUnavailable):
+                pass  # the host's reaper removes it when its TTL runs out
+            raise
+        usage = client.delete_sandbox(sandbox)
+    # every sandbox, not only loop attempts: the final evaluation and the load check use compute too
+    labels = spec["labels"]
+    hooks.emit(context.run_id, "sandbox_usage", model=labels["model"], attempt=labels["attempt"],
+               step=step, usage=usage)
 
     if status["state"] == "lost":
         raise SandboxUnavailable("the evaluator's output stopped without an exit code; the sandbox host lost it")

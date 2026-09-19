@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -185,6 +186,39 @@ def test_expired_run_data_is_uploaded_again(run):
     assert len(host.volumes) == 2 and host.sandboxes[1]["spec"]["volume"] == "vol1"
 
 
+def slots_held(monkeypatch, host):
+    """Records sandbox_slot: what each asked for, and whether its sandbox was gone when it was given back."""
+    held = []
+
+    @contextmanager
+    def slot(run_id, memory_mb, cpus):
+        held.append({"memory_mb": memory_mb, "cpus": cpus})
+        try:
+            yield
+        finally:
+            held[-1]["deleted_before_release"] = all(sandbox["deleted"] for sandbox in host.sandboxes)
+
+    monkeypatch.setattr(hooks, "sandbox_slot", slot)
+    return held
+
+
+def test_each_sandbox_holds_a_slot_from_create_to_delete(run, monkeypatch):
+    context, start = run
+    host = start(([status("exited", exit_code=0)], {"result.json": ok_result()}))
+    held = slots_held(monkeypatch, host)
+    runner.run_candidate(MODULE, "ridge", 1, context, backend="sandbox")
+    assert held == [{"memory_mb": 2048, "cpus": context.n_jobs, "deleted_before_release": True}]
+
+
+def test_a_lost_sandbox_gives_its_slot_back(run, monkeypatch):
+    context, start = run
+    host = start(([status("lost")], {}))
+    held = slots_held(monkeypatch, host)
+    with pytest.raises(SandboxUnavailable):
+        runner.run_candidate(MODULE, "ridge", 1, context, backend="sandbox")
+    assert held[0]["deleted_before_release"]
+
+
 def test_the_run_releases_its_data(run):
     context, start = run
     host = start(([status("exited", exit_code=0)], {"result.json": ok_result()}))
@@ -208,7 +242,8 @@ class InfoHost:
         }
 
     def capacity(self):
-        return {"cpus": 8, "memory_free_mb": 8192}
+        # busy with another job's sandboxes: the plan still comes from the whole budget
+        return {"cpus": 8, "memory_budget_mb": 8192, "memory_free_mb": 1024}
 
 
 def test_runtime_hash_matches_the_script_that_labels_the_image():

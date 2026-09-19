@@ -61,12 +61,14 @@ def plan_resources(train_path: str, n_models: int, client=None) -> ResourcePlan:
     max_threads = MAX_THREADS
 
     if client is not None:
-        # the host's budget already leaves room for everything else on that machine
+        # the host's whole budget, not what is free right now: jobs share the host, and
+        # the worker queues their sandboxes fairly, so a job planned while others run
+        # gets the same sandboxes as one planned alone
         capacity, limits = client.capacity(), client.info()["limits"]
         cpus = int(capacity["cpus"])
-        available = usable = float(capacity["memory_free_mb"])
+        available = usable = float(capacity["memory_budget_mb"])
         max_threads = min(MAX_THREADS, int(limits["max_cpus"]))
-        where = "free in the sandbox budget"
+        where = "in the sandbox budget"
     else:
         cpus = os.cpu_count() or 2
         available = psutil.virtual_memory().available / 1e6

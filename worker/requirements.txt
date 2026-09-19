@@ -1,0 +1,5 @@
+# the worker, on top of the pipeline's own requirements
+psycopg[binary]==3.3.6
+psycopg-pool==3.3.2
+langgraph-checkpoint-postgres==3.1.2
+cryptography>=42

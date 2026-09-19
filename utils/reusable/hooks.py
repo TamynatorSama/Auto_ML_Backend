@@ -10,6 +10,8 @@ variables surviving LangGraph's thread pool.
     check_stop(run_id)                  raises RunStopped when should_stop answers
     llm_for(run_id, role)               role: planner | generator | fixer | judge
     sandbox_for(run_id)                 the run's sandbox host
+    sandbox_slot(run_id, memory_mb, cpus)  held while one sandbox exists: the worker
+                                        queues it fairly with other jobs' sandboxes
     set_limits(run_id, budget_usd=None, deadline=None)
     request_stop(run_id, reason="stop requested")
     spend(run_id) -> {"input_tokens", "output_tokens", "cost_usd"}
@@ -27,6 +29,7 @@ from __future__ import annotations
 
 import threading
 import time
+from contextlib import nullcontext
 from functools import lru_cache
 from typing import Dict, Optional
 
@@ -98,6 +101,10 @@ class Hooks:
         # one host for every run: AUTOML_SANDBOX_URL and AUTOML_SANDBOX_TOKEN
         return _client_from_env()
 
+    def sandbox_slot(self, run_id, memory_mb: float, cpus: float):
+        # one run at a time on the command line: the host's own 429 is limit enough
+        return nullcontext()
+
     def record_usage(self, run_id, role: str, model: str, input_tokens: int, output_tokens: int) -> None:
         price_in, price_out = PRICES.get(model, (0.0, 0.0))
         cost = (input_tokens * price_in + output_tokens * price_out) / 1e6
@@ -158,6 +165,10 @@ def llm_for(run_id, role: str):
 
 def sandbox_for(run_id):
     return _hooks.sandbox_for(run_id)
+
+
+def sandbox_slot(run_id, memory_mb: float, cpus: float):
+    return _hooks.sandbox_slot(run_id, memory_mb, cpus)
 
 
 def set_limits(run_id, budget_usd: Optional[float] = None, deadline: Optional[float] = None) -> None:

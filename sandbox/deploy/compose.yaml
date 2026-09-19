@@ -1,4 +1,6 @@
 # docker compose -f sandbox/deploy/compose.yaml up -d --build
+# A second server beside it (a test host): AUTOML_SANDBOX_PORT=8766 AUTOML_SANDBOX_CONFIG_FILE=<its config>
+# docker compose -p automl-sandbox-2 -f sandbox/deploy/compose.yaml up -d
 # The Docker socket is root-equivalent: run nothing else of value in this service.
 services:
   sandbox:
@@ -8,8 +10,8 @@ services:
     image: automl-sandbox:0.1.0
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8765:8765"   # localhost only
+      - "127.0.0.1:${AUTOML_SANDBOX_PORT:-8765}:8765"   # localhost only
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /sys/fs/cgroup:/sys/fs/cgroup:ro   # to read each sandbox's usage
-      - /etc/automl-sandbox/config.toml:/etc/automl-sandbox/config.toml:ro
+      - ${AUTOML_SANDBOX_CONFIG_FILE:-/etc/automl-sandbox/config.toml}:/etc/automl-sandbox/config.toml:ro

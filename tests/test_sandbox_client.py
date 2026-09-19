@@ -148,3 +148,19 @@ def test_download_is_capped(tmp_path, monkeypatch):
     client, _ = client_for(lambda request: httpx.Response(200, content=body))
     with pytest.raises(SandboxError, match="over"):
         client.download("sbx", tmp_path)
+
+
+def test_lists_a_jobs_sandboxes_by_label():
+    handler, seen = replies((200, [{"id": "0f9e8d7c6b5a", "labels": {"run": "12"}}]))
+    client, _ = client_for(handler)
+    assert client.list_sandboxes({"run": "12", "model": "lightgbm"})[0]["id"] == "0f9e8d7c6b5a"
+    assert seen[0].url.params.get_list("label") == ["run:12", "model:lightgbm"]
+
+
+def test_each_retry_is_reported_to_on_wait():
+    handler, _ = replies(httpx.ConnectError, httpx.ConnectError, (200, {"ok": True}))
+    client, sleeps = client_for(handler)
+    waits = []
+    client.on_wait = lambda problem, delay: waits.append(delay)
+    client.info()
+    assert waits == sleeps == list(RETRY_DELAYS[:2])
