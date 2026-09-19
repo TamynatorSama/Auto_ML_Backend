@@ -1,11 +1,13 @@
 """
-db.py
------
-Connecting to Postgres, and applying worker/sql/*.sql in order.
+db
+--
+Connecting to Postgres, and applying db/sql/*.sql in order. Shared by the
+worker and the API; the API never imports the worker.
 
 Migrations are plain SQL files, applied once each, in name order, and recorded
 in schema_migrations; one transaction covers them all. LangGraph's checkpoint
-tables are created by PostgresSaver.setup(), which setup() below also calls.
+tables are created by PostgresSaver.setup(), which setup() below also calls
+(the worker's job; the API only migrates).
 """
 
 from __future__ import annotations

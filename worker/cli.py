@@ -1,7 +1,7 @@
 """
 cli.py
 ------
-What the Config screen will do, until the API exists (Phase 3):
+What the Config screen will do, until the web app has it (Phases 4 and 5):
 
     python -m worker.cli add-host URL [--workspace SLUG] [--token-env NAME] [--max-running-jobs N]
     python -m worker.cli set-host HOST --max-running-jobs N   how many jobs train on it at once
@@ -10,6 +10,8 @@ What the Config screen will do, until the API exists (Phase 3):
     python -m worker.cli stop JOB
     python -m worker.cli resume JOB
     python -m worker.cli status [JOB]
+    python -m worker.cli allow EMAIL...                       invite to the beta: they can sign up (A5)
+    python -m worker.cli disallow EMAIL...
 
 A host without --workspace is the platform's own; with one, it runs only that
 workspace's jobs (D11). The token is read from --token-env, or asked for.
@@ -26,8 +28,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+import db
 from models import DataSchema
-from worker import crypto, db, queue
+from worker import crypto, queue
 
 DEFAULT_WORKSPACE = "default"
 
@@ -94,6 +97,17 @@ def create_job(conn, workspace_id: int, name: str, data_path: str, schema: DataS
         ).fetchone()["id"]
         queue.enqueue(conn, "plan", job_id)
     return job_id
+
+
+def allow(conn, emails: list) -> None:
+    for email in emails:
+        conn.execute("INSERT INTO signup_allowlist (email) VALUES (%s) ON CONFLICT DO NOTHING",
+                     (email.strip().lower(),))
+
+
+def disallow(conn, emails: list) -> None:
+    # stops new sign-ups only; an account already made stays
+    conn.execute("DELETE FROM signup_allowlist WHERE email = ANY(%s)", ([email.strip().lower() for email in emails],))
 
 
 def approve(conn, job_id: int, edits: dict | None = None) -> None:
@@ -238,6 +252,10 @@ def main(argv=None) -> None:
     status = commands.add_parser("status", help="list jobs, or show one")
     status.add_argument("job", type=int, nargs="?")
 
+    for name, text in (("allow", "let these emails sign up"), ("disallow", "take these emails off the allowlist")):
+        command = commands.add_parser(name, help=text)
+        command.add_argument("emails", nargs="+", metavar="EMAIL")
+
     args = parser.parse_args(argv)
     pool = db.pool(size=2)
     try:
@@ -260,6 +278,10 @@ def main(argv=None) -> None:
                 print(f"job {args.job}: {stop(conn, args.job)}")
             elif args.command == "resume":
                 print(f"job {args.job}: {resume(conn, args.job)}")
+            elif args.command in ("allow", "disallow"):
+                (allow if args.command == "allow" else disallow)(conn, args.emails)
+                emails = [row["email"] for row in conn.execute("SELECT email FROM signup_allowlist ORDER BY email")]
+                print(f"allowlist ({len(emails)}): {', '.join(emails) or 'empty'}")
             else:
                 _status(conn, args)
     finally:

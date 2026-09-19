@@ -24,9 +24,9 @@ import psycopg
 from psycopg_pool import ConnectionPool
 
 from code_gen_eval.sandbox_client import SandboxClient
+from db import jsonb
 from utils.reusable.hooks import Hooks, RunStopped
 from worker import crypto
-from worker.db import jsonb
 from worker.pool import HostPool, usable_cpus
 
 STOP_CHECK_SECONDS = 5

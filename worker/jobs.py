@@ -22,9 +22,9 @@ from langgraph.types import Command
 
 import main
 from code_gen_eval.resume import resume_run
+from db import FILES_KEPT_DAYS, jsonb
 from models import DataSchema
 from utils.reusable import hooks
-from worker.db import FILES_KEPT_DAYS, jsonb
 
 RUNS_ROOT = Path("runs")
 BACKEND = "sandbox"   # tests switch it to subprocess

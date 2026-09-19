@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import psycopg
 
-from worker.db import FILES_KEPT_DAYS, jsonb
+from db import FILES_KEPT_DAYS, jsonb
 
 CLAIM_LOCK = 72002
 STALE_SECONDS = 60

@@ -20,8 +20,9 @@ import traceback
 import psycopg
 from dotenv import load_dotenv
 
+import db
 from utils.reusable import hooks
-from worker import crypto, db, jobs, queue
+from worker import crypto, jobs, queue
 from worker.hooks import WorkerHooks
 from worker.sweep import sweep
 
