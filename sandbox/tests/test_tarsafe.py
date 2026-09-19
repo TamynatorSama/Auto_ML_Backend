@@ -54,6 +54,16 @@ def test_refuses_unsafe_entries(entry):
         clean(make_tar([entry]), "1000:1000")
 
 
+def test_refuses_sparse_bomb():
+    # 10 KB of archive declaring 50 MB of zeros
+    info = member("bomb.bin", size=0, pax_headers={"GNU.sparse.map": "0,0", "GNU.sparse.size": str(50 * 1024 * 1024)})
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        tar.addfile(info, io.BytesIO(b""))
+    with pytest.raises(BadRequest, match="sparse"):
+        clean(out.getvalue(), "1000:1000")
+
+
 def test_refuses_non_tar():
     with pytest.raises(BadRequest):
         clean(b"not a tar archive at all" * 40, "1000:1000")

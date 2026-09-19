@@ -50,6 +50,9 @@ def from_dict(data: dict) -> Config:
         raise ValueError("token must be at least 32 characters")
     if config.runtime not in RUNTIMES:
         raise ValueError(f"runtime must be one of {', '.join(RUNTIMES)}")
+    uid, _, gid = config.sandbox_user.partition(":")
+    if not (uid.isdigit() and gid.isdigit()) or int(uid) == 0:
+        raise ValueError("sandbox_user must be numeric uid:gid, and not root")
     if not config.images or not all(isinstance(v, str) for v in config.images.values()):
         raise ValueError("images must map names to image tags")
     return config

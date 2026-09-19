@@ -25,6 +25,9 @@ def test_loads_toml(tmp_path):
     ({"token": TOKEN, "runtime": "kata"}, "runtime must be"),
     ({"token": TOKEN, "memory_budget_mb": "8G"}, "memory_budget_mb must be int"),
     ({"token": TOKEN, "pids_limit": True}, "pids_limit must be int"),
+    ({"token": TOKEN, "sandbox_user": "0:0"}, "not root"),
+    ({"token": TOKEN, "sandbox_user": "root"}, "not root"),
+    ({"token": TOKEN, "sandbox_user": "1000"}, "not root"),
     ({"token": TOKEN, "images": {}}, "images"),
     ({"token": TOKEN, "images": {"r": 3}}, "images"),
 ])

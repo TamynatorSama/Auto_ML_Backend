@@ -44,7 +44,7 @@ class VolumeIn(Strict):
 
 class SandboxIn(Strict):
     image: str
-    cpus: float = Field(gt=0)
+    cpus: float = Field(ge=0.01)  # below this Docker's nano_cpus rounds to 0: no limit at all
     memory_mb: int = Field(gt=0)
     work_mb: int = Field(gt=0)
     ttl_seconds: Optional[int] = Field(None, gt=0)
@@ -63,7 +63,8 @@ def at_most(name: str, value, limit) -> None:
 
 
 def create_app(config: Config, engine) -> FastAPI:
-    app = FastAPI(title="automl-sandbox", version=__version__)
+    # no /docs or /openapi.json: they would be the only routes open without the token
+    app = FastAPI(title="automl-sandbox", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
     expected = f"Bearer {config.token}".encode()
 
     def check_token(authorization: str = Header("")):

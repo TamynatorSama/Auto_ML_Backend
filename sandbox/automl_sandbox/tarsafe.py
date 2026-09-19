@@ -23,6 +23,9 @@ def clean(data: bytes, user: str):
                     raise BadRequest("archive may not contain an entry for '.'")
                 if not (member.isfile() or member.isdir()):
                     raise BadRequest(f"only files and folders are allowed: {member.name}")
+                if member.issparse():
+                    # a few bytes of sparse map can declare gigabytes of zeros
+                    raise BadRequest(f"sparse files are not allowed: {member.name}")
 
                 member.name = str(path)
                 member.uid, member.gid, member.uname, member.gname = uid, gid, "", ""

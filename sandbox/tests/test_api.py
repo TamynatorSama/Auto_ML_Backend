@@ -28,6 +28,12 @@ def test_health_needs_no_token(client):
     assert client.get("/v1/health").json() == {"ok": True}
 
 
+@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json"])
+def test_no_open_docs(client, path):
+    client.headers.pop("Authorization")
+    assert client.get(path).status_code == 404
+
+
 @pytest.mark.parametrize("method, path", ROUTES)
 @pytest.mark.parametrize("header", [None, "Bearer wrong", TOKEN])
 def test_every_route_needs_the_token(client, engine, method, path, header):
@@ -50,6 +56,7 @@ def test_create_sandbox(client, engine, config):
     {"image": "automl-runner:current"},
     {"cpus": 4.5},
     {"cpus": 0},
+    {"cpus": 1e-10},
     {"memory_mb": 6145},
     {"work_mb": 4097},
     {"ttl_seconds": 86401},
