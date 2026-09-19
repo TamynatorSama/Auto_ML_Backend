@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from models import Configs, RunContext
+from utils.reusable import hooks
 from utils.reusable.resources import plan_resources
 
 
@@ -34,7 +35,8 @@ def load_run(run_dir: str | Path) -> Optional[Tuple[RunContext, Configs]]:
     # a run resumed after running out of memory must not repeat the plan that
     # ran out. n_jobs is only ever lowered: a pool of worker processes is paid
     # for in memory, and seeded estimators give the same model either way.
-    plan = plan_resources(context.train_path, len(config.models))
+    client = hooks.sandbox_for(context.run_id) if context.backend == "sandbox" else None
+    plan = plan_resources(context.train_path, len(config.models), client)
     override = os.environ.get("AUTOML_CONCURRENCY")
     concurrency = int(override) if override else plan.max_concurrency
     context = context.model_copy(update={

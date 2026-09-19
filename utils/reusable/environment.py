@@ -16,19 +16,26 @@ midway through would mean the attempts before it and the attempts after it were
 measured under different conditions, which is exactly the variable the frozen
 split and the shared folds exist to remove.
 
-    probe_environment(backend)                 -> {import_name: version}
+    probe_environment(backend, client)         -> {import_name: version}
     resolve_models(models, environment)        -> (available, unavailable)
     provision(models, environment, policy)     -> (installed, notes)
+    runtime_hash()                             -> the hash of automl_runtime's source
+
+A sandbox host reports its image's packages in GET /v1/info, with the hash of
+the automl_runtime baked into it. A host whose hash differs from ours would
+score models with a different evaluator, so it is refused.
 """
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import importlib.metadata
 import importlib.util
-import json
+import re
 import subprocess
 import sys
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 # model name -> (import name, pip name). Anything absent needs only sklearn.
@@ -51,6 +58,11 @@ ALL_MODELS = [
 PROVISION_NEVER = "never"
 PROVISION_ONCE = "once"
 PROVISION_IMAGE = "image"
+
+RUNNER_IMAGE = "automl-runner"
+RUNTIME_DIR = Path(__file__).resolve().parents[2] / "automl_runtime"
+# import names whose distribution is called something else
+DISTRIBUTIONS = {"sklearn": "scikit-learn"}
 
 
 def required_import(model: str) -> str:
@@ -81,37 +93,44 @@ def _probe_here(names: List[str]) -> Dict[str, str]:
     return found
 
 
-def _probe_docker(image: str, names: List[str]) -> Dict[str, str]:
-    """Ask the image itself what it has, rather than trusting a requirements file."""
-    script = (
-        "import importlib.util, importlib.metadata, json\n"
-        f"names = {names!r}\n"
-        "found = {}\n"
-        "for n in names:\n"
-        "    if importlib.util.find_spec(n) is None: continue\n"
-        "    try: found[n] = importlib.metadata.version(n)\n"
-        "    except Exception: found[n] = 'unknown'\n"
-        "print(json.dumps(found))\n"
-    )
-    try:
-        completed = subprocess.run(
-            ["docker", "run", "--rm", "--network", "none", image, "python", "-c", script],
-            capture_output=True, text=True, timeout=120,
+def runtime_hash(root: Path = RUNTIME_DIR) -> str:
+    """Same as sandbox/scripts/runtime_hash.py, which labels the runner image."""
+    digest = hashlib.sha256()
+    for path in sorted(Path(root).glob("*.py")):
+        digest.update(path.name.encode() + b"\0")
+        # CRLF -> LF so a Windows checkout hashes the same as Linux
+        digest.update(path.read_bytes().replace(b"\r\n", b"\n") + b"\0")
+    return digest.hexdigest()[:16]
+
+
+def _normal(distribution: str) -> str:
+    return re.sub(r"[-_.]+", "-", distribution).lower()
+
+
+def _probe_sandbox(client, names: List[str]) -> Dict[str, str]:
+    """Ask the sandbox host what its runner image has, and refuse a different runtime."""
+    image = client.info()["images"].get(RUNNER_IMAGE) or {}
+    if image.get("error") or "packages" not in image:
+        raise RuntimeError(f"the sandbox host has no usable {RUNNER_IMAGE} image: {image.get('error', 'no package list')}")
+    ours, theirs = runtime_hash(), image.get("runtime_hash")
+    if theirs != ours:
+        raise RuntimeError(
+            f"the sandbox host runs automl_runtime {theirs}, this code is {ours}: rebuild its runner image "
+            "with sandbox/scripts/build_runner_image.sh"
         )
-    except (OSError, subprocess.SubprocessError):
-        return {}
-    if completed.returncode != 0:
-        return {}
-    try:
-        return json.loads(completed.stdout.strip().splitlines()[-1])
-    except (ValueError, IndexError):
-        return {}
+    packages = {_normal(name): version for name, version in image["packages"].items()}
+    found = {}
+    for name in names:
+        version = packages.get(_normal(DISTRIBUTIONS.get(name, name)))
+        if version:
+            found[name] = version
+    return found
 
 
-def probe_environment(backend: str = "subprocess", image: str = "automl-runner") -> Dict[str, str]:
+def probe_environment(backend: str = "subprocess", client=None) -> Dict[str, str]:
     names = _probe_names()
-    if backend == "docker":
-        return _probe_docker(image, names)
+    if backend == "sandbox":
+        return _probe_sandbox(client, names)
     return _probe_here(names)
 
 
@@ -153,9 +172,8 @@ def provision(
         notes.append(f"missing packages for {names}; provisioning is off, so those models are dropped")
         return [], notes
 
-    if backend == "docker":
-        # installing inside the training container would need the network that
-        # --network none deliberately removes
+    if backend == "sandbox":
+        # installing inside a sandbox would need the network it deliberately lacks
         notes.append(
             f"missing packages for {names} in the runner image; rebuild it with those in "
             "runner_requirements.txt rather than installing at run time"

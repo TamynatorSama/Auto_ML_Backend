@@ -40,7 +40,7 @@ def test_rewrite_request_answered_with_valid_edits_is_applied(monkeypatch):
     unmatched = edit("alpha=9.0", "alpha=2.0")
     applicable = edit("    return Ridge(alpha=1.0)", "    return Ridge(alpha=2.0)")
     llm = ScriptedLLM([unmatched, unmatched, applicable])
-    monkeypatch.setattr(loop, "_llm", lambda: llm)
+    monkeypatch.setattr(loop, "_llm", lambda *args: llm)
 
     code, _ = loop._ask_for_code("brief", MODULE)
 
@@ -51,7 +51,7 @@ def test_rewrite_request_answered_with_valid_edits_is_applied(monkeypatch):
 def test_unusable_replies_keep_the_current_module_instead_of_an_empty_one(monkeypatch):
     unmatched = edit("alpha=9.0", "alpha=2.0")
     llm = ScriptedLLM([unmatched, unmatched, unmatched])
-    monkeypatch.setattr(loop, "_llm", lambda: llm)
+    monkeypatch.setattr(loop, "_llm", lambda *args: llm)
 
     code, changes = loop._ask_for_code("brief", MODULE)
 
@@ -61,7 +61,7 @@ def test_unusable_replies_keep_the_current_module_instead_of_an_empty_one(monkey
 
 def test_fixer_with_no_module_regenerates_from_the_brief(monkeypatch):
     llm = ScriptedLLM(["MODE: REWRITE\n" + MODULE])
-    monkeypatch.setattr(loop, "_llm", lambda: llm)
+    monkeypatch.setattr(loop, "_llm", lambda *args: llm)
     failed = AttemptRecord(
         model="ridge", attempt=3, generation=2, script_path="candidate.py", status="error",
         traceback="the generator returned no usable candidate: There is no script to edit yet.",

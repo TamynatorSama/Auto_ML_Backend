@@ -19,7 +19,8 @@ evaluator there, and reads back result.json.
 Backends:
     subprocess  - the evaluator runs in this interpreter's environment. Fast, no
                   isolation.
-    docker      - one container per attempt, no network, capped cpu and memory.
+    sandbox     - a fresh sandbox on the run's sandbox host for every attempt
+                  (sandbox/DESIGN.md): no network, gVisor, capped cpu and memory.
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ import sys as _sys
 import threading
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import psutil
 
@@ -51,7 +52,9 @@ from automl_runtime.evaluate import (
     MODEL_FILE,
     RESULT_FILE,
 )
+from code_gen_eval.sandbox_client import SandboxError, SandboxUnavailable
 from models import AttemptRecord, RunContext
+from utils.reusable import hooks
 from utils.reusable.guards import check_attempt
 from utils.reusable.resources import memory_limit, wait_for_memory
 
@@ -59,7 +62,10 @@ NEWLINE = chr(10)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CANDIDATE_FILE = "candidate.py"
 BUILD_FUNCTION = "build_pipeline"
-DOCKER_IMAGE = "automl-runner"
+RUNNER_IMAGE = "automl-runner"   # a name from the sandbox host's image allowlist
+WORK_MB = 2048                  # /work in a sandbox: the attempt's files and outputs
+VOLUME_TTL = 86400              # the run's data stays on the host at most a day
+SANDBOX_POLL_SECONDS = 0.5
 STDOUT_KEPT = 4000          # characters of stdout carried into the record
 POLL_SECONDS = 0.1
 ERROR_GRACE_SECONDS = 10     # how long a process may keep running after a traceback appears
@@ -97,9 +103,9 @@ def write_contract(
     plan = context.split_plan
     train_path = str(Path(context.train_path).resolve())
     folds_path = str(Path(context.folds_path).resolve())
-    if backend == "docker":
+    if backend == "sandbox":
         train_path = f"/data/{Path(context.train_path).name}"
-        folds_path = f"/run/{Path(context.folds_path).name}"
+        folds_path = f"/data/{Path(context.folds_path).name}"
 
     contract = Contract(
         model=model,
@@ -135,31 +141,124 @@ def _subprocess_command(context: RunContext, out_dir: Path, final: bool, load_ch
     return command
 
 
-def _docker_command(context: RunContext, out_dir: Path, final: bool, load_check: bool = False) -> list:
-    """One container per attempt: no network, capped cpu, memory and pids.
-
-    The data, the frozen folds and the runtime are mounted read-only; only the
-    attempt directory is writable, so a candidate cannot damage what every
-    other model shares.
-    """
-    command = [
-        "docker", "run", "--rm",
-        "--network", "none",
-        "--cpus", str(context.n_jobs),
-        "--memory", "4g",
-        "--pids-limit", "256",
-        "-v", f"{Path(context.train_path).resolve().parent}:/data:ro",
-        "-v", f"{Path(context.folds_path).resolve().parent}:/run:ro",
-        "-v", f"{PROJECT_ROOT / 'automl_runtime'}:/opt/automl/automl_runtime:ro",
-        "-v", f"{out_dir.resolve()}:/work",
-        "-e", "PYTHONPATH=/opt/automl",
-        "-w", "/work",
-        DOCKER_IMAGE,
-        "python", "-m", "automl_runtime.evaluate", "--attempt-dir", "/work",
-    ]
+def _sandbox_command(context: RunContext, final: bool, load_check: bool = False) -> list:
+    command = ["python", "-m", "automl_runtime.evaluate", "--attempt-dir", "/work"]
     if final or load_check:
         command += ["--load-check" if load_check else "--final", "--test", f"/data/{Path(context.test_path).name}"]
     return command
+
+
+# ---------------------------------------------------------------------------
+# sandbox
+# ---------------------------------------------------------------------------
+
+_volumes: Dict[Tuple[str, str], str] = {}
+_volumes_lock = threading.Lock()
+
+
+def _run_volume(client, context: RunContext, kind: str, fresh: bool = False) -> str:
+    """The run's data on the sandbox host, uploaded once per run.
+
+    Two volumes, so a loop attempt never sees the test set: "training" holds the
+    training file and the folds, "final" adds the test file for the final
+    evaluation and the load check.
+    """
+    key = (context.run_dir, kind)
+    with _volumes_lock:
+        if fresh or key not in _volumes:
+            paths = [context.train_path, context.folds_path] + ([context.test_path] if kind == "final" else [])
+            volume = client.create_volume({"run": str(context.run_id), "data": kind}, VOLUME_TTL)
+            client.put_volume_files(volume, {Path(path).name: Path(path) for path in paths})
+            _volumes[key] = volume
+        return _volumes[key]
+
+
+def release_run(context: RunContext) -> None:
+    """Drop the run's data from the sandbox host once the run is over."""
+    if context.backend != "sandbox":
+        return
+    client = hooks.sandbox_for(context.run_id)
+    for kind in ("training", "final"):
+        with _volumes_lock:
+            volume = _volumes.pop((context.run_dir, kind), None)
+        if volume:
+            try:
+                client.delete_volume(volume, retry=False)
+            except (SandboxError, SandboxUnavailable) as error:
+                print(f"run data left for the sandbox host's reaper: {error}")
+
+
+def _follow(client, sandbox: str, exec_id: str):
+    """Poll an exec to its end -> (final status, stdout, stderr, died_after_error).
+
+    The same rule as _execute: a traceback followed by ERROR_GRACE_SECONDS
+    without an exit is a failure, not a slow model, and the sandbox is killed.
+    """
+    out, err = [], []
+    out_at = err_at = 0
+    first_error_at = None
+    died_after_error = False
+    while True:
+        status = client.poll(sandbox, exec_id, out_at, err_at)
+        out.append(status["stdout"])
+        err.append(status["stderr"])
+        out_at, err_at = status["stdout_offset"], status["stderr_offset"]
+        if status["state"] != "running":
+            return status, "".join(out), "".join(err), died_after_error
+
+        now = time.monotonic()
+        if first_error_at is None and _has_traceback("".join(err)):
+            first_error_at = now
+        elif first_error_at is not None and not died_after_error and now - first_error_at > ERROR_GRACE_SECONDS:
+            died_after_error = True
+            client.kill(sandbox)
+        time.sleep(SANDBOX_POLL_SECONDS)
+
+
+def _sandbox_execute(
+    context: RunContext, out_dir: Path, command: list, files: dict, data: str, deadline: float, memory_mb: float, step: str
+):
+    """Run one evaluator command in a fresh sandbox and bring /work back into out_dir.
+
+    Returns what _execute returns, plus the host's usage report. The sandbox is
+    always deleted: a model load check never reuses the sandbox that trained,
+    and under gVisor a sandbox that ran out of memory keeps holding it.
+    """
+    client = hooks.sandbox_for(context.run_id)
+    spec = dict(
+        image=RUNNER_IMAGE, cpus=context.n_jobs, memory_mb=int(memory_mb), work_mb=WORK_MB,
+        ttl_seconds=int(deadline) + 600,
+        labels={"run": str(context.run_id), "model": out_dir.parent.name,
+                "attempt": out_dir.name.removeprefix("attempt_"), "step": step},
+    )
+    try:
+        sandbox = client.create_sandbox(**spec, volume=_run_volume(client, context, data))
+    except SandboxError as error:
+        if error.status != 404:
+            raise
+        # the run's data expired on the host, or the host is new: upload it again
+        sandbox = client.create_sandbox(**spec, volume=_run_volume(client, context, data, fresh=True))
+
+    try:
+        client.put_files(sandbox, files)
+        exec_id = client.start_exec(sandbox, command, deadline)
+        status, stdout, stderr, died_after_error = _follow(client, sandbox, exec_id)
+        if status["state"] == "exited":
+            client.download(sandbox, out_dir)
+    except BaseException:
+        try:
+            client.delete_sandbox(sandbox, retry=False)
+        except (SandboxError, SandboxUnavailable):
+            pass  # the host's reaper removes it when its TTL runs out
+        raise
+    usage = client.delete_sandbox(sandbox)
+
+    if status["state"] == "lost":
+        raise SandboxUnavailable("the evaluator's output stopped without an exit code; the sandbox host lost it")
+    return (
+        status["exit_code"], stdout, stderr, status["elapsed_seconds"], usage.get("peak_memory_mb") or 0.0,
+        status["state"] == "timeout", died_after_error, bool(status["oom_killed"]), usage,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -352,14 +451,21 @@ def _check_model(context: RunContext, out_dir: Path, backend: str, ceiling: floa
     scores that were already computed. Here the ceiling is held against loading
     the model alone, and the scores stand whatever the check finds.
     """
-    builder = _docker_command if backend == "docker" else _subprocess_command
-    command = builder(context, out_dir, False, load_check=True)
     result_path = out_dir / LOAD_CHECK_FILE
     result_path.unlink(missing_ok=True)
 
-    exit_code, stdout, stderr, _, _, timed_out, _, over_memory = _execute(
-        command, out_dir, _environment(), LOAD_CHECK_TIMEOUT, ceiling
-    )
+    if backend == "sandbox":
+        # the pickle refers to what the candidate defined, so the module goes with it
+        files = {name: out_dir / name for name in (CANDIDATE_FILE, CONTRACT_FILE, MODEL_FILE)}
+        exit_code, stdout, stderr, _, _, timed_out, _, over_memory, _ = _sandbox_execute(
+            context, out_dir, _sandbox_command(context, False, load_check=True), files, "final",
+            LOAD_CHECK_TIMEOUT, ceiling, "load_check",
+        )
+    else:
+        command = _subprocess_command(context, out_dir, False, load_check=True)
+        exit_code, stdout, stderr, _, _, timed_out, _, over_memory = _execute(
+            command, out_dir, _environment(), LOAD_CHECK_TIMEOUT, ceiling
+        )
     (out_dir / "stdout_load_check.txt").write_text(stdout, encoding="utf-8")
     (out_dir / "stderr_load_check.txt").write_text(stderr, encoding="utf-8")
 
@@ -572,6 +678,7 @@ def _cached_record(
                 "script_path": str(out_dir / CANDIDATE_FILE),
                 "changes": f"identical to attempt {record.attempt}; not re-run",
                 "cached_from": record.cached_from or record.attempt,
+                "usage": {},
             }
         )
     return None
@@ -631,6 +738,8 @@ def run_candidate(
     extra_excluded: Optional[List[str]] = None,
     ablation_of: Optional[int] = None,
 ) -> AttemptRecord:
+    # before every candidate run, the loop's, a leak check's or the final one
+    hooks.check_stop(context.run_id)
     out_dir = attempt_dir(context, model, attempt)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -673,28 +782,37 @@ def run_candidate(
         return record
 
     write_contract(context, model, out_dir, backend, extra_excluded)
-    if backend == "docker":
-        command = _docker_command(context, out_dir, final)
-    elif backend == "subprocess":
-        command = _subprocess_command(context, out_dir, final)
-    else:
-        raise ValueError(f"unknown backend: {backend}")
-
     result_path = out_dir / (FINAL_RESULT_FILE if final else RESULT_FILE)
     result_path.unlink(missing_ok=True)
-
-    # other applications may have taken memory since the run was planned
-    waited = wait_for_memory(context.worker_memory_mb)
-    if waited >= 1:
-        print(f"  waited {waited:.0f}s for {context.worker_memory_mb:.0f} MB of free memory")
-
     hard_limit = context.time_budget_seconds * BUDGET_SLACK + BUDGET_EXTRA_SECONDS
-    ceiling = memory_limit(context.worker_memory_mb, context.max_concurrency) if context.worker_memory_mb else 0.0
-    # run from the attempt directory: libraries that write training logs into
-    # the working directory (catboost_info) then leave them with the attempt
-    exit_code, stdout, stderr, wall_seconds, peak_mb, timed_out, died_after_error, over_memory = _execute(
-        command, out_dir, _environment(), hard_limit, ceiling
-    )
+
+    if backend == "sandbox":
+        # the sandbox's memory limit is the ceiling, and the kernel holds it; the
+        # host queues the attempt while its memory budget is spoken for
+        ceiling = context.worker_memory_mb
+        command = _sandbox_command(context, final)
+        files = {CANDIDATE_FILE: candidate_path, CONTRACT_FILE: out_dir / CONTRACT_FILE}
+        exit_code, stdout, stderr, wall_seconds, peak_mb, timed_out, died_after_error, over_memory, usage = (
+            _sandbox_execute(
+                context, out_dir, command, files, "final" if final else "training",
+                hard_limit, ceiling, "final" if final else "loop",
+            )
+        )
+        record.usage = usage
+    elif backend == "subprocess":
+        command = _subprocess_command(context, out_dir, final)
+        # other applications may have taken memory since the run was planned
+        waited = wait_for_memory(context.worker_memory_mb)
+        if waited >= 1:
+            print(f"  waited {waited:.0f}s for {context.worker_memory_mb:.0f} MB of free memory")
+        ceiling = memory_limit(context.worker_memory_mb, context.max_concurrency) if context.worker_memory_mb else 0.0
+        # run from the attempt directory: libraries that write training logs into
+        # the working directory (catboost_info) then leave them with the attempt
+        exit_code, stdout, stderr, wall_seconds, peak_mb, timed_out, died_after_error, over_memory = _execute(
+            command, out_dir, _environment(), hard_limit, ceiling
+        )
+    else:
+        raise ValueError(f"unknown backend: {backend}")
 
     suffix = "_final" if final else ""
     (out_dir / f"stdout{suffix}.txt").write_text(stdout, encoding="utf-8")
@@ -760,6 +878,8 @@ def run_candidate(
         record.warnings += [finding.message for finding in record.findings]
         for finding in record.findings:
             print(f"  guard [{finding.severity}]: {finding.message}")
+            hooks.emit(context.run_id, "guard_finding", model=model, attempt=attempt, finding=finding.kind,
+                       severity=finding.severity, message=finding.message)
 
     record_file.write_text(record.model_dump_json(indent=2), encoding="utf-8")
     return record

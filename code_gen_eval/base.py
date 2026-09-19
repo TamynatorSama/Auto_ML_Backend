@@ -22,6 +22,10 @@ from utils.reusable.leakage import read_exclusions
 from utils.reusable.report import build_report, result_group
 from utils.reusable.report_html import render_html
 from code_gen_eval.code_gen_subgraph import app as code_gen_subgraph
+from code_gen_eval.runner import release_run
+from code_gen_eval.sandbox_client import SandboxUnavailable
+from utils.reusable import hooks
+from utils.reusable.hooks import RunStopped
 
 load_dotenv()
 
@@ -104,25 +108,48 @@ def code_gen_worker(payload: dict) -> dict:
         try:
             result = ModelResult.model_validate_json(saved.read_text(encoding="utf-8"))
             print(f"[{model}] resumed: finished in an earlier session ({result.status})")
+            hooks.emit(context.run_id, "model_resumed", **_summary(result))
             return {"completed_sections": [result]}
         except ValueError:
             pass
 
-    with _slot(context):
-        model_dir = saved.parent
-        if model_dir.exists():
-            label = "before-rerun" if rerun else "interrupted"
-            model_dir.rename(model_dir.with_name(f"{model}.{label}-{datetime.now():%Y%m%d%H%M%S}"))
-        try:
-            final = code_gen_subgraph.invoke({"context": context, "model": model}, {"recursion_limit": 150})
-            result = final["result"]
-        except Exception as error:
-            print(f"[{model}] worker failed: {error!r}")
-            result = ModelResult(model=model, status="failed", error=repr(error))
+    hooks.emit(context.run_id, "model_waiting", model=model)
+    try:
+        hooks.check_stop(context.run_id)
+        with _slot(context):
+            hooks.check_stop(context.run_id)  # the stop may have come while this model waited
+            hooks.emit(context.run_id, "model_started", model=model)
+            model_dir = saved.parent
+            if model_dir.exists():
+                label = "before-rerun" if rerun else "interrupted"
+                model_dir.rename(model_dir.with_name(f"{model}.{label}-{datetime.now():%Y%m%d%H%M%S}"))
+            try:
+                final = code_gen_subgraph.invoke({"context": context, "model": model}, {"recursion_limit": 150})
+                result = final["result"]
+            except (RunStopped, SandboxUnavailable):
+                raise
+            except Exception as error:
+                print(f"[{model}] worker failed: {error!r}")
+                result = ModelResult(model=model, status="failed", error=repr(error))
+    except (RunStopped, SandboxUnavailable) as error:
+        # not the model's failure: nothing is saved, so a resume trains it again
+        print(f"[{model}] stopped: {error}")
+        result = ModelResult(model=model, status="stopped", error=f"stopped: {error}")
+        hooks.emit(context.run_id, "model_finished", **_summary(result))
+        return {"completed_sections": [result]}
 
     saved.parent.mkdir(parents=True, exist_ok=True)
     saved.write_text(result.model_dump_json(indent=2), encoding="utf-8")
+    hooks.emit(context.run_id, "model_finished", **_summary(result))
     return {"completed_sections": [result], "reruns": [model] if rerun else []}
+
+
+def _summary(result: ModelResult) -> dict:
+    return {
+        "model": result.model, "status": result.status, "best_attempt": result.best_attempt,
+        "best_cv_scores": result.best_cv_scores, "test_scores": result.test_scores,
+        "eligibility": result.eligibility, "error": result.error[:500],
+    }
 
 
 def latest_results(results: List[ModelResult]) -> List[ModelResult]:
@@ -219,6 +246,10 @@ def recheck_eligibility(results: List[ModelResult], context: RunContext) -> None
 def summarize_results(state: CodeGenEvalState) -> CodeGenEvalState:
     context = state["context"]
     metric = context.primary_metric
+    # the run is over: let go of what it held, in this process and on the sandbox host
+    with _slots_lock:
+        _slots.pop(context.run_dir, None)
+    release_run(context)
     results = latest_results(state["completed_sections"])
     recheck_eligibility(results, context)
     ranked = rank_results(results, context)
@@ -306,6 +337,8 @@ def summarize_results(state: CodeGenEvalState) -> CodeGenEvalState:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "report.json").write_text(structured.model_dump_json(indent=2), encoding="utf-8")
     print(f"report: {out_dir / 'report.json'}")
+    hooks.emit(context.run_id, "report_ready", status=structured.status, selected_model=structured.selected_model,
+               path=str(out_dir / "report.json"))
 
     # the rendered page is a convenience for reading a run without a frontend,
     # not the deliverable; the JSON above is what an interface consumes

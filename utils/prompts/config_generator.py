@@ -23,11 +23,18 @@ fields, no trailing commas.
   "max_tries": int,
   "improvement_delta": float,
   "improvement_mode": "absolute" | "relative",
-  "improvement_metric": str
+  "improvement_metric": str,
+  "reasons": {"models": str, "eval_matrics": str, "early_stopping_patience": str,
+              "max_tries": str, "improvement_delta": str}
 }
 ```
 
 ## Fields
+
+**reasons** — one short sentence per listed field saying why you chose it, citing
+the profile (row count, imbalance, feature types). A person reads these before
+approving the plan, so write for them, not for the pipeline.
+
 
 **models** — 4 to 6 candidates, best first, drawn only from:
 `logistic_regression`, `linear_regression`, `ridge`, `lasso`, `elastic_net`,
@@ -152,6 +159,13 @@ minority examples, one categorical with 180 levels, one numeric 24% missing.
   "max_tries": 4,
   "improvement_delta": 0.005,
   "improvement_mode": "absolute",
-  "improvement_metric": "pr_auc"
+  "improvement_metric": "pr_auc",
+  "reasons": {
+    "models": "CatBoost handles the 180-level categorical natively; a linear model, a forest and knn give contrast.",
+    "eval_matrics": "At 16:1 imbalance accuracy is meaningless, so precision-recall area leads.",
+    "early_stopping_patience": "291 minority examples make scores noisy, so two stalled tries end a model.",
+    "max_tries": "5,000 rows fit quickly, so four tries per model are affordable.",
+    "improvement_delta": "Half a point of pr_auc is above the fold-to-fold noise at this size."
+  }
 }
 ```"""

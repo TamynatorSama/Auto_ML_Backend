@@ -16,6 +16,8 @@ class AutoMLState(TypedDict):
     # code_gen_eval.resume.resume_run(run_dir)
     run_id: int
     run_dir: str
+    # pause after planning until a person approves the plan (needs a checkpointer)
+    review: bool
     data_path: str
     schema: DataSchema
     full_summary: str
@@ -43,6 +45,26 @@ graph.add_edge("information", "code_gen_eval")
 graph.add_edge("code_gen_eval", END)
 
 app = graph.compile()
+
+
+def checkpoint_types() -> list:
+    """Every class defined in models/: the checkpointer's allowlist.
+
+    LangGraph is moving to refuse loading any class from a checkpoint that is
+    not listed, so a caller that compiles `graph` with a checkpointer passes
+    JsonPlusSerializer(allowed_msgpack_modules=checkpoint_types()).
+    """
+    import importlib
+    import inspect
+    import pkgutil
+
+    import models
+
+    found = []
+    for info in pkgutil.iter_modules(models.__path__):
+        module = importlib.import_module(f"models.{info.name}")
+        found += [cls for _, cls in inspect.getmembers(module, inspect.isclass) if cls.__module__ == module.__name__]
+    return found
 
 
 if __name__ == "__main__":

@@ -2,6 +2,9 @@
 
     python try_out_runner.py [slug ...]
 
+AUTOML_BACKEND=sandbox trains through the sandbox server at AUTOML_SANDBOX_URL
+with AUTOML_SANDBOX_TOKEN (see docs/PHASE1.md); the default runs candidates here.
+
 The two subgraphs are invoked separately rather than through `main.app` so the
 context, profile and report of each run can be written out between them. Each
 run is placed explicitly (run id and directory), and AUTOML_RUN_PREFIX puts a
@@ -277,6 +280,8 @@ def execute(spec: dict) -> dict:
                 "topic": spec["topic"],
                 "run_id": spec["run_id"],
                 "run_dir": str(run_dir),
+                # subprocess (this machine) or sandbox (AUTOML_SANDBOX_URL / _TOKEN)
+                "backend": os.environ.get("AUTOML_BACKEND", "subprocess"),
             }
         )
         context, config = information["context"], information["config"]

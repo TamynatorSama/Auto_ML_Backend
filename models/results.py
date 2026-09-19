@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 # A diverged model really does score inf, and the default serialiser writes that
 # as null, which then fails to load back — so the record of the worst failures
@@ -56,6 +56,8 @@ class AttemptRecord(BaseModel):
     fit_seconds: Optional[float] = None      # fitting only, summed over folds
     wall_seconds: Optional[float] = None     # measured by the runner
     peak_memory_mb: Optional[float] = None
+    # what the sandbox host measured and reserved for this attempt (sandbox backend only)
+    usage: Dict[str, Any] = {}
     artifacts: Dict[str, str] = {}
     findings: List[Finding] = []
     warnings: List[str] = []                 # the findings and evaluator notes as sentences

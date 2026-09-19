@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List
+from typing import Dict, List
 
 
 class Baseline(BaseModel):
@@ -17,3 +17,5 @@ class Configs(BaseModel):
     improvement_delta: float
     improvement_mode: str
     improvement_metric: str
+    # field name -> why the generator chose it, shown to the person reviewing the plan
+    reasons: Dict[str, str] = {}

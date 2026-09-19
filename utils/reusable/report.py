@@ -377,7 +377,11 @@ def build_report(results: List[ModelResult], context: RunContext) -> RunReport:
     report = RunReport(
         run_id=context.run_id,
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        status="complete" if scored else "no model produced a score",
+        # a stopped model has not finished, so neither has the run: resume_run carries on
+        status=(
+            "stopped" if any(result.status == "stopped" for result in results)
+            else "complete" if scored else "no model produced a score"
+        ),
         dataset=DatasetInfo(
             target=context.target,
             task_type=context.task_type,

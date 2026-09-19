@@ -9,7 +9,6 @@ import operator
 
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, START, StateGraph
 
 from automl_runtime.reference import REFERENCE_CANDIDATE
@@ -19,6 +18,7 @@ from code_gen_eval.runner import attempt_dir, run_candidate
 from utils.prompts.code_gen_prompt import code_gen_prompt
 from utils.prompts.code_fixer import code_fixer_prompt
 from utils.prompts.code_judge import code_judge_prompt
+from utils.reusable import hooks
 from utils.reusable.eligibility import TIER_NAMES, assess, ranked_eligible, replay, used_excluded
 from utils.reusable.guards import check_final
 from utils.reusable.leakage import add_exclusions, columns_to_ablate, judge_ablation, read_exclusions
@@ -119,8 +119,8 @@ def _leak_checks(record: AttemptRecord, attempts: List[AttemptRecord]) -> List[A
     return [a for a in attempts if a.kind == "ablation" and a.ablation_of == subject and a.verdict]
 
 
-def _llm():
-    return ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2)
+def _llm(run_id, role: str):
+    return hooks.llm_for(run_id, role)
 
 
 def _libraries(context: RunContext) -> str:
@@ -224,7 +224,9 @@ def generate_code(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
             f"search/replace blocks against CURRENT CODE."
         )
 
-    code, changes = _ask_for_code(human, "" if broken else current_code)
+    generation = state.get("generation", 0) + 1
+    hooks.emit(context.run_id, "generation_started", model=model, generation=generation, attempt=attempt)
+    code, changes = _ask_for_code(human, "" if broken else current_code, context.run_id, "generator")
     return {
         "attempt": attempt,
         "generation": state.get("generation", 0) + 1,
@@ -234,7 +236,7 @@ def generate_code(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
     }
 
 
-def _ask_for_code(human: str, current_code: str) -> tuple:
+def _ask_for_code(human: str, current_code: str, run_id=None, role: str = "generator") -> tuple:
     """One generation, with a single corrective round trip if the edits do not apply.
 
     patching.EditError already explains what went wrong in words meant for the
@@ -245,7 +247,7 @@ def _ask_for_code(human: str, current_code: str) -> tuple:
     result sentinel, is caught here too: both are certain failures, and finding
     out by running them cost an attempt each time it happened.
     """
-    model = _llm()
+    model = _llm(run_id, role)
     messages = [SystemMessage(content=code_gen_prompt), HumanMessage(content=human)]
 
     for correction in range(2):
@@ -303,6 +305,7 @@ def run_code(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
         )
         (out_dir / "record.json").write_text(record.model_dump_json(indent=2), encoding="utf-8")
         print(f"[{state['model']}] attempt {record.attempt}: {record.status} (no script) — {reason}")
+        _emit_attempt(context, record)
         return {"attempts": [record]}
 
     record = run_candidate(
@@ -319,6 +322,7 @@ def run_code(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
         extra_excluded=list(read_exclusions(context.run_dir)),
     )
     print(f"[{state['model']}] attempt {record.attempt}: {record.status} {record.cv_scores}")
+    _emit_attempt(context, record)
 
     # an attempt that cleared the stage the previous one failed at, whether a
     # repair or a new generation after repairs ran out, is a fix every worker
@@ -329,7 +333,16 @@ def run_code(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
         lesson = record_lesson(context.run_dir, state["model"], failed, record)
         if lesson:
             print(f"[{state['model']}] lesson: {lesson['signature'][:100]} -> {lesson['fix'][:80]}")
+            hooks.emit(context.run_id, "lesson", model=state["model"], signature=lesson["signature"], fix=lesson["fix"])
     return {"attempts": [record]}
+
+
+def _emit_attempt(context: RunContext, record: AttemptRecord) -> None:
+    hooks.emit(
+        context.run_id, "attempt_finished", model=record.model, attempt=record.attempt,
+        generation=record.generation, attempt_kind=record.kind, status=record.status, changes=record.changes,
+        cv_scores=record.cv_scores, wall_seconds=record.wall_seconds, usage=record.usage,
+    )
 
 
 def fix_code(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
@@ -351,8 +364,9 @@ def fix_code(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
             f"## WHAT WENT WRONG\n{record.traceback}\n\n"
             "Reply with MODE: REWRITE and a complete candidate module."
         )
-        code, changes = _ask_for_code(human, "")
+        code, changes = _ask_for_code(human, "", context.run_id, "fixer")
         print(f"[{model}] repair {state.get('repairs', 0) + 1}: regenerated from the brief")
+        hooks.emit(context.run_id, "repair", model=model, attempt=state["attempt"] + 1, changes="regenerated from the brief")
         return {
             "attempt": state["attempt"] + 1,
             "repairs": state.get("repairs", 0) + 1,
@@ -386,7 +400,7 @@ def fix_code(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
         f"## CANDIDATE\n{state['current_code']}"
     )
 
-    llm = _llm()
+    llm = _llm(context.run_id, "fixer")
     reason = "the fixer produced no reply"
     messages = [SystemMessage(content=code_fixer_prompt), HumanMessage(content=human)]
     for correction in range(2):
@@ -394,6 +408,7 @@ def fix_code(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
         try:
             reply = resolve_reply(message_text(response), state["current_code"], CANDIDATE_CONTRACT)
             print(f"[{model}] repair {state.get('repairs', 0) + 1}: {reply.changes[:90]}")
+            hooks.emit(context.run_id, "repair", model=model, attempt=state["attempt"] + 1, changes=reply.changes)
             return {
                 "attempt": state["attempt"] + 1,
                 "repairs": state.get("repairs", 0) + 1,
@@ -514,6 +529,7 @@ def verify(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
                     f"without {named}, {source} kept only {retained:.0%} of its gain over the baseline "
                     f"({shift}); leak confirmed, so {named} are excluded from the run"
                 )
+                hooks.emit(context.run_id, "exclusion", columns=columns, found_by=model, reason=decision)
                 add_exclusions(context.run_dir, columns, {
                     "reason": f"leak confirmed by {model} attempt {record.attempt}: {decision}",
                     "found_by": model,
@@ -543,6 +559,8 @@ def verify(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
         (Path(check.script_path).parent / "record.json").write_text(check.model_dump_json(indent=2), encoding="utf-8")
 
     print(f"[{model}] leak check ({verdict}): {decision}")
+    hooks.emit(context.run_id, "leak_check", model=model, attempt=record.attempt, verdict=verdict,
+               columns=columns, decision=decision)
     return {"attempt": attempt, "attempts": measurements}
 
 
@@ -565,11 +583,13 @@ def judge(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
         f"## EARLIER ATTEMPTS\n{history or 'none'}"
     )
 
-    response = _llm().invoke(
+    response = _llm(context.run_id, "judge").invoke(
         [SystemMessage(content=code_judge_prompt), HumanMessage(content=human)]
     )
     notes = message_text(response).strip()
-    print(f"[{state['model']}] {notes.splitlines()[0][:120]}")
+    first_line = notes.splitlines()[0][:120] if notes else ""
+    print(f"[{state['model']}] {first_line}")
+    hooks.emit(context.run_id, "judge_note", model=state["model"], attempt=record.attempt, note=first_line)
     return {"judge_notes": notes}
 
 
@@ -583,6 +603,9 @@ def decide(state: CodeGenSubgraphState) -> CodeGenSubgraphState:
     was never supposed to match.
     """
     context = state["context"]
+    # between generations: a stop, the budget or the deadline ends the model here,
+    # before another LLM call is paid for
+    hooks.check_stop(context.run_id)
     attempts = state.get("attempts", [])
     record = _latest(attempts)
     patience = state.get("patience", 0)
@@ -749,7 +772,9 @@ graph.add_edge("judge", "decide")
 graph.add_conditional_edges("decide", route, ["generate_code", "final_eval"])
 graph.add_edge("final_eval", END)
 
-app = graph.compile()
+# never checkpointed, even inside a graph that is: every step of every model would
+# go to the checkpointer, and result.json already lets a run resume
+app = graph.compile(checkpointer=False)
 
 
 if __name__ == "__main__":

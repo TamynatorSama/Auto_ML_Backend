@@ -12,8 +12,8 @@ import json
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
+from langgraph.types import interrupt
 
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
 from dotenv import load_dotenv
 import pandas as pd
@@ -33,6 +33,7 @@ from utils.reusable.summary import profile_dataset, render_profile
 from utils.reusable.splitting import apply_split_plan, write_split
 from utils.reusable.baseline import run_baseline
 from utils.reusable.requirements import derive_requirements
+from utils.reusable import hooks
 from utils.reusable.resources import plan_resources
 from utils.reusable.llm import message_text
 from utils.reusable.metrics import METRIC_DIRECTION
@@ -81,6 +82,11 @@ class InformationState(TypedDict):
     # inputs, identical fingerprint, so a cached plan can be reused
     plan_fingerprint: str
     reuse_plan: bool
+    # review: pause after the config is drafted until a person approves the plan.
+    # approved: the plan has been reviewed; resplit: the reviewer changed the split
+    review: bool
+    approved: bool
+    resplit: bool
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
 
@@ -187,7 +193,7 @@ def plan_split(state: InformationState) -> InformationState:
         print(f"split plan reused from {_plan_cache(state)}")
         return {"split_plan": split_plan}
 
-    model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0)
+    model = hooks.llm_for(state["run_id"], "planner")
     response = model.invoke(
         [
             SystemMessage(content=split_planner_prompt),
@@ -237,11 +243,18 @@ def summarize_train(state: InformationState) -> InformationState:
         for name, column in full["columns"].items()
     ]
 
+    # the profile's recommendations, and every column the schema marks as an
+    # identifier or as ignored
+    drop_columns = list(notes.get("recommend_drop", []))
+    for column in state["schema"].columns:
+        if column.role in ("identifier", "ignore") and column.name not in drop_columns:
+            drop_columns.append(column.name)
+
     return {
         "summary": summary,
         "target": target_column(state),
         "task_type": notes["task_type"],
-        "drop_columns": notes.get("recommend_drop", []),
+        "drop_columns": drop_columns,
         "preprocessing_requirements": requirements,
         "columns": columns,
     }
@@ -277,21 +290,29 @@ def screen_leakage(state: InformationState) -> InformationState:
     return {"leakage_screen": hits, "summary": state["summary"] + render_screen(hits)}
 
 
+def _sandbox(state):
+    """The run's sandbox host, or None when candidates run on this machine."""
+    return hooks.sandbox_for(state["run_id"]) if state.get("backend") == "sandbox" else None
+
+
 def probe_env(state: InformationState) -> InformationState:
     backend = state.get("backend", "subprocess")
-    environment = probe_environment(backend)
+    environment = probe_environment(backend, _sandbox(state))
     print(f"environment: {', '.join(f'{k} {v}' for k, v in sorted(environment.items()))}")
     return {"environment": environment}
 
 
 def generate_config(state: InformationState) -> InformationState:
+    if state.get("approved"):
+        # back here after a reviewer changed the split: keep the config they approved
+        return {}
     cached = _cached(state, "config")
     if cached is not None:
         config = Configs(**cached)
         print(f"config reused from {_plan_cache(state)}")
         return {"config": config}
 
-    model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.0)
+    model = hooks.llm_for(state["run_id"], "planner")
     usable = available_model_names(state["environment"])
     # stating this up front beats pruning afterwards: a pruned list loses the
     # model the generator ranked first and leaves a short, unbalanced slate
@@ -314,6 +335,38 @@ def generate_config(state: InformationState) -> InformationState:
     return {"config": config}
 
 
+def review_plan(state: InformationState) -> InformationState:
+    """Pause for a person to review the drafted plan, when the caller asked for it.
+
+    interrupt() stops the graph here and the checkpointer keeps it; nothing runs
+    and nothing is held in memory while it waits. It resumes with the reviewer's
+    edits, {"split_plan": {...}, "config": {...}}, either optional and either
+    partial: each is merged over the drafted values and checked by building the
+    model. A changed split sends the graph back to apply_split; the planners are
+    not asked again.
+    """
+    if not state.get("review") or state.get("approved"):
+        return {"resplit": False}
+
+    edits = interrupt({
+        "split_plan": state["split_plan"].model_dump(),
+        "config": state["config"].model_dump(),
+        "leakage_screen": state.get("leakage_screen") or [],
+    }) or {}
+    split_plan = SplitPlan(**{**state["split_plan"].model_dump(), **(edits.get("split_plan") or {})})
+    config = Configs(**{**state["config"].model_dump(), **(edits.get("config") or {})})
+    return {
+        "split_plan": split_plan,
+        "config": config,
+        "approved": True,
+        "resplit": split_plan != state["split_plan"],
+    }
+
+
+def route_review(state: InformationState) -> str:
+    return "apply_split" if state.get("resplit") else "resolve_environment"
+
+
 def resolve_environment(state: InformationState) -> InformationState:
     """Pin the libraries the run will use, and drop models nothing can import.
 
@@ -323,18 +376,18 @@ def resolve_environment(state: InformationState) -> InformationState:
     environment is a race.
     """
     backend = state.get("backend", "subprocess")
-    # install what the chosen models need, once, before anything trains. Docker
-    # is the exception: its training container has no network by design, so a
-    # missing package there means rebuilding the image, not installing at runtime
+    # install what the chosen models need, once, before anything trains. A
+    # sandbox is the exception: it has no network by design, so a missing
+    # package there means rebuilding the image, not installing at runtime
     policy = state.get("provision_policy") or (
-        PROVISION_NEVER if backend == "docker" else PROVISION_ONCE
+        PROVISION_NEVER if backend == "sandbox" else PROVISION_ONCE
     )
     config = state["config"]
     environment = state["environment"]
 
     installed, notes = provision(config.models, environment, policy, backend)
     if installed:
-        environment = probe_environment(backend)
+        environment = probe_environment(backend, _sandbox(state))
 
     available, unavailable = resolve_models(config.models, environment)
     if unavailable:
@@ -376,6 +429,7 @@ def prepare_run(state: InformationState) -> InformationState:
     # confirmed later by a model's leak check is written to
     for hit in state.get("leakage_screen") or []:
         if hit.get("outcome", "").startswith("excluded"):
+            hooks.emit(run_id, "exclusion", columns=hit["columns"], found_by="leakage screen", reason=hit["formula"])
             add_exclusions(run_dir, hit["columns"], {
                 "reason": (
                     f"leakage screen before any model: {hit['formula']} reproduces the target "
@@ -426,7 +480,7 @@ def build_context(state: InformationState) -> InformationState:
             }
         )
 
-    resources = plan_resources(state["train_path"], len(config.models))
+    resources = plan_resources(state["train_path"], len(config.models), _sandbox(state))
     concurrency = int(os.environ.get("AUTOML_CONCURRENCY") or resources.max_concurrency)
     print(f"resources: {resources.reason}" + (f"; concurrency overridden to {concurrency}" if concurrency != resources.max_concurrency else ""))
 
@@ -491,6 +545,7 @@ graph.add_node("summarize_train", summarize_train)
 graph.add_node("screen_leakage", screen_leakage)
 graph.add_node("probe_env", probe_env)
 graph.add_node("generate_config", generate_config)
+graph.add_node("review_plan", review_plan)
 graph.add_node("resolve_environment", resolve_environment)
 graph.add_node("prepare_run", prepare_run)
 graph.add_node("compute_baseline", compute_baseline)
@@ -503,7 +558,8 @@ graph.add_edge("apply_split", "summarize_train")
 graph.add_edge("summarize_train", "screen_leakage")
 graph.add_edge("screen_leakage", "probe_env")
 graph.add_edge("probe_env", "generate_config")
-graph.add_edge("generate_config", "resolve_environment")
+graph.add_edge("generate_config", "review_plan")
+graph.add_conditional_edges("review_plan", route_review, ["apply_split", "resolve_environment"])
 graph.add_edge("resolve_environment", "prepare_run")
 graph.add_edge("prepare_run", "compute_baseline")
 graph.add_edge("compute_baseline", "build_context")

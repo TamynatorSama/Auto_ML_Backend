@@ -9,9 +9,12 @@ and the crash took every model with it. The plan is made from the machine as it
 is when the run starts (free memory, cores) and the size of the training data,
 and it is recorded in the run so the choice can be read afterwards.
 
-    plan_resources(train_path, n_models) -> ResourcePlan
+    plan_resources(train_path, n_models, client=None) -> ResourcePlan
     wait_for_memory(needed_mb)           -> seconds waited
     memory_limit(worker_mb, concurrency) -> MB one evaluator may use before it is stopped
+
+With a sandbox client the plan is made from the sandbox host's memory budget
+instead of this machine, and worker_memory_mb is the memory each sandbox gets.
 """
 
 from __future__ import annotations
@@ -52,13 +55,24 @@ def _usable_mb() -> float:
     return max(0.0, available - SYSTEM_RESERVE_MB) * MEMORY_HEADROOM
 
 
-def plan_resources(train_path: str, n_models: int) -> ResourcePlan:
-    cpus = os.cpu_count() or 2
-    available = psutil.virtual_memory().available / 1e6
+def plan_resources(train_path: str, n_models: int, client=None) -> ResourcePlan:
     frame = Path(train_path).stat().st_size / 1e6 * DATA_EXPANSION
     per_worker = WORKER_OVERHEAD_MB + frame * WORKING_COPIES
+    max_threads = MAX_THREADS
 
-    usable = _usable_mb()
+    if client is not None:
+        # the host's budget already leaves room for everything else on that machine
+        capacity, limits = client.capacity(), client.info()["limits"]
+        cpus = int(capacity["cpus"])
+        available = usable = float(capacity["memory_free_mb"])
+        max_threads = min(MAX_THREADS, int(limits["max_cpus"]))
+        where = "free in the sandbox budget"
+    else:
+        cpus = os.cpu_count() or 2
+        available = psutil.virtual_memory().available / 1e6
+        usable = _usable_mb()
+        where = "free"
+
     by_memory = int(usable // per_worker)
     by_cores = max(1, cpus // 2)
     concurrency = max(1, min(max(1, n_models), by_cores, by_memory))
@@ -68,13 +82,17 @@ def plan_resources(train_path: str, n_models: int) -> ResourcePlan:
     # memory, so it is granted only where the memory is there to pay for it
     share = usable / concurrency
     by_memory_jobs = 1 + int(max(0.0, share - per_worker) // PARALLEL_WORKER_MB)
-    n_jobs = max(1, min(MAX_THREADS, cpus // concurrency, by_memory_jobs))
+    n_jobs = max(1, min(max_threads, cpus // concurrency, by_memory_jobs))
     per_worker += (n_jobs - 1) * PARALLEL_WORKER_MB
 
+    if client is not None:
+        # each sandbox gets its share of the budget, as memory_limit gives an evaluator here
+        per_worker = min(float(limits["max_sandbox_memory_mb"]), max(per_worker, share))
+
     limit = "memory" if by_memory <= min(by_cores, n_models) else ("cores" if by_cores < n_models else "models")
-    jobs_limit = "memory" if by_memory_jobs < min(MAX_THREADS, cpus // concurrency) else "cores"
+    jobs_limit = "memory" if by_memory_jobs < min(max_threads, cpus // concurrency) else "cores"
     reason = (
-        f"{available:.0f} MB free and about {per_worker:.0f} MB per worker for {frame:.0f} MB of data; "
+        f"{available:.0f} MB {where} and about {per_worker:.0f} MB per worker for {frame:.0f} MB of data; "
         f"{cpus} cores; {concurrency} worker(s), limited by {limit}, with n_jobs {n_jobs}, limited by {jobs_limit}"
     )
     return ResourcePlan(concurrency, n_jobs, round(per_worker, 1), round(available, 1), cpus, reason)
