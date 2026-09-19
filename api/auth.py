@@ -171,12 +171,12 @@ def signup(body: SignupIn, request: Request, background: BackgroundTasks, conn=D
 
 
 @router.post("/verify")
-def verify(body: TokenIn, response: Response, conn=Depends(get_conn)):
+def verify(body: TokenIn, request: Request, response: Response, conn=Depends(get_conn)):
     with conn.transaction():
         user_id = use_link(conn, body.token, "verify")
         conn.execute("UPDATE users SET email_verified_at = coalesce(email_verified_at, now()) WHERE id = %s",
                      (user_id,))
-        sessions.sign_in(conn, response, user_id)
+        sessions.sign_in(conn, response, user_id, request)
     return me(conn, user_id)
 
 
@@ -197,7 +197,7 @@ def login(body: LoginIn, request: Request, response: Response, background: Backg
         return JSONResponse({"detail": "Confirm your email first: we've sent you a new link"}, status_code=403)
     if hasher.check_needs_rehash(user["password_hash"]):
         conn.execute("UPDATE users SET password_hash = %s WHERE id = %s", (hasher.hash(body.password), user["id"]))
-    sessions.sign_in(conn, response, user["id"])
+    sessions.sign_in(conn, response, user["id"], request)
     return me(conn, user["id"])
 
 
@@ -215,7 +215,7 @@ def forgot(body: EmailIn, request: Request, background: BackgroundTasks, conn=De
 
 
 @router.post("/password/reset")
-def reset(body: ResetIn, response: Response, conn=Depends(get_conn)):
+def reset(body: ResetIn, request: Request, response: Response, conn=Depends(get_conn)):
     check_password(body.password)
     password_hash = hasher.hash(body.password)
     with conn.transaction():
@@ -226,5 +226,5 @@ def reset(body: ResetIn, response: Response, conn=Depends(get_conn)):
         conn.execute("UPDATE email_tokens SET used_at = now() WHERE user_id = %s AND purpose = 'reset' "
                      "AND used_at IS NULL", (user_id,))
         sessions.end_all(conn, user_id)
-        sessions.sign_in(conn, response, user_id)
+        sessions.sign_in(conn, response, user_id, request)
     return me(conn, user_id)

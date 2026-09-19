@@ -35,9 +35,12 @@ def _set_cookie(response: Response, token: str) -> None:
                         httponly=True, samesite="lax", secure=config.SECURE)
 
 
-def sign_in(conn, response: Response, user_id: int) -> None:
+def sign_in(conn, response: Response, user_id: int, request: Request | None = None) -> None:
     token = secrets.token_urlsafe(32)
     conn.execute("DELETE FROM sessions WHERE user_id = %s AND expires_at < now()", (user_id,))
+    old = request and request.cookies.get(COOKIE)
+    if old:   # this browser's last session, whosever it was: signing in again ends it
+        conn.execute("DELETE FROM sessions WHERE id = %s", (token_hash(old),))
     conn.execute("INSERT INTO sessions (id, user_id, expires_at) VALUES (%s, %s, now() + %s)",
                  (token_hash(token), user_id, LIFETIME))
     _set_cookie(response, token)

@@ -23,6 +23,7 @@ from starlette.concurrency import run_in_threadpool
 
 from api import config, sessions
 from api.auth import NOT_INVITED, invited
+from api.workspaces import SLUG
 
 router = APIRouter(prefix="/api/auth/oauth")
 oauth = OAuth()
@@ -69,7 +70,7 @@ async def profile(provider: str, request: Request) -> dict:
             "name": user.json().get("name") or user.json().get("login")}
 
 
-def sign_in(pool, provider: str, person: dict, response: Response) -> str:
+def sign_in(pool, provider: str, person: dict, response: Response, request: Request) -> str:
     """Finds, links or makes the user and signs them in; returns where the web app goes next."""
     email = (person["email"] or "").strip().lower()
     with pool.connection() as conn, conn.transaction():
@@ -102,10 +103,14 @@ def sign_in(pool, provider: str, person: dict, response: Response) -> str:
                 raise Refused(NOT_INVITED)
             conn.execute("INSERT INTO oauth_identities (user_id, provider, subject, email) VALUES (%s, %s, %s, %s)",
                          (user_id, provider, person["subject"], email))
-        sessions.sign_in(conn, response, user_id)
+        sessions.sign_in(conn, response, user_id, request)
         workspace = conn.execute("SELECT w.slug FROM memberships m JOIN workspaces w ON w.id = m.workspace_id "
                                  "WHERE m.user_id = %s ORDER BY m.created_at LIMIT 1", (user_id,)).fetchone()
-    return f"/{workspace['slug']}" if workspace else "/welcome"
+    # only a slug-shaped path: a workspace made by the command line could hold anything,
+    # and "//elsewhere.example" in a Location header leaves the site
+    if workspace and SLUG.fullmatch(workspace["slug"]):
+        return f"/{workspace['slug']}"
+    return "/welcome"
 
 
 @router.get("/{provider}")
@@ -124,7 +129,7 @@ async def callback(provider: str, request: Request):
         except (OAuthError, httpx.HTTPError, KeyError):
             raise Refused(f"Signing in with {NAMES[provider]} didn't finish. Try again.")
         response.headers["location"] = await run_in_threadpool(sign_in, request.app.state.pool, provider, person,
-                                                               response)
+                                                               response, request)
     except Refused as refusal:
         return Response(status_code=303, headers={"location": f"/login?error={quote(str(refusal))}"})
     return response

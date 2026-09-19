@@ -38,7 +38,11 @@ def create_app(pool=None) -> FastAPI:
         # on top of SameSite=Lax: anything that changes something must come from the web app itself
         if request.method not in SAFE_METHODS and request.headers.get("origin") != config.APP_ORIGIN:
             return JSONResponse({"detail": "Cross-site request refused"}, status_code=403)
-        return await call_next(request)
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"     # no guessing an answer is HTML
+        response.headers["X-Frame-Options"] = "DENY"               # nothing here belongs in a frame
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
 
     # only the OAuth redirect and callback use it (api/oauth.py)
     app.add_middleware(SessionMiddleware, secret_key=config.oauth_state_secret(), session_cookie="automl_oauth",
