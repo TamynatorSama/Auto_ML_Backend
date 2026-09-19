@@ -1,0 +1,15 @@
+# docker compose -f sandbox/deploy/compose.yaml up -d --build
+# The Docker socket is root-equivalent: run nothing else of value in this service.
+services:
+  sandbox:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: automl-sandbox:0.1.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"   # localhost only
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro   # to read each sandbox's usage
+      - /etc/automl-sandbox/config.toml:/etc/automl-sandbox/config.toml:ro

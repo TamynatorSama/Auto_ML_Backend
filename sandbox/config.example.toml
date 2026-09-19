@@ -1,0 +1,23 @@
+# /etc/automl-sandbox/config.toml — every setting, with its default.
+# Only `token` is required. Unknown settings stop the server from starting.
+
+token = "replace-with-at-least-32-random-characters"  # openssl rand -hex 32
+
+runtime = "runsc"                 # "runsc" (gVisor) or "runc"
+memory_budget_mb = 8192           # memory all sandboxes may reserve together
+max_sandbox_memory_mb = 6144      # largest single sandbox
+max_cpus = 4.0                    # most CPUs a single sandbox may have
+pids_limit = 512                  # gVisor's own threads count against this
+max_work_mb = 4096                # largest /work scratch space
+tmp_mb = 512                      # size of /tmp in each sandbox
+default_ttl_seconds = 3600
+max_ttl_seconds = 86400
+max_exec_seconds = 7200
+max_upload_mb = 200
+max_output_kb = 2048              # output kept per stream; the newest bytes win
+sandbox_user = "1000:1000"
+cgroup_root = "/sys/fs/cgroup"
+reap_interval_seconds = 30
+
+[images]                          # the only images a sandbox may use, by name
+automl-runner = "automl-runner:current"

@@ -1,6 +1,15 @@
 FROM python:3.12-slim
 
-WORKDIR /work
+# LightGBM's wheels load the system OpenMP runtime, which slim images lack
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
 
 COPY code_gen_eval/runner_requirements.txt /tmp/runner_requirements.txt
-RUN pip install --no-cache-dir -r /tmp/runner_requirements.txt
+RUN pip install --no-cache-dir -r /tmp/runner_requirements.txt && rm /tmp/runner_requirements.txt
+
+COPY automl_runtime /opt/automl/automl_runtime
+ARG RUNTIME_HASH=unknown
+LABEL automl.runtime_hash=$RUNTIME_HASH
+
+# the root filesystem is read-only in the sandbox: only /work and /tmp are writable
+ENV PYTHONPATH=/opt/automl PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HOME=/tmp JOBLIB_TEMP_FOLDER=/tmp
+WORKDIR /work
