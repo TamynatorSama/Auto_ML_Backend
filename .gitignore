@@ -8,5 +8,6 @@ __pycache__/
 .vscode/
 .data/
 runs/
+uploads/
 *.md
 /tests/

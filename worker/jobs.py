@@ -25,6 +25,7 @@ from code_gen_eval.resume import resume_run
 from db import FILES_KEPT_DAYS, jsonb
 from models import DataSchema
 from utils.reusable import hooks
+from worker import sources
 
 RUNS_ROOT = Path("runs")
 BACKEND = "sandbox"   # tests switch it to subprocess
@@ -156,4 +157,4 @@ def fail(pool, job_id: int, error: str) -> None:
         total_usage(conn, job_id)
 
 
-HANDLERS = {"plan": plan, "train": train}
+HANDLERS = {"plan": plan, "train": train, **sources.HANDLERS}

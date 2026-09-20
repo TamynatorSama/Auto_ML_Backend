@@ -4,6 +4,7 @@ uvicorn==0.53.0
 argon2-cffi==25.1.0
 authlib==1.8.0
 itsdangerous==2.2.0
+duckdb==1.5.5
 psycopg[binary]==3.3.6
 psycopg-pool==3.3.2
 python-dotenv==1.2.3

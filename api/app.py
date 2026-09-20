@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
 
 import db
-from api import auth, config, oauth, tenancy, workspaces
+from api import auth, config, oauth, schemas, sources, tenancy, workspaces
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
@@ -50,6 +50,7 @@ def create_app(pool=None) -> FastAPI:
     app.include_router(auth.router)
     app.include_router(oauth.router)
     app.include_router(workspaces.router)
+    # sources.py and schemas.py hang their routes off tenancy.router at import, so this covers them too
     app.include_router(tenancy.router)
     return app
 

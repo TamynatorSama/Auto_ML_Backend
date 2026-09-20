@@ -5,12 +5,13 @@ import { useNavigate } from "react-router-dom";
 import { api, type Me, type Workspace } from "../api";
 import { Logo } from "../ui";
 
-/** One source in the sidebar's tree; Phase 4 fills this in. */
+/** One source in the sidebar's tree, as Phase 4 fills it in. */
 export type Source = {
   name: string;
   schema?: { label: string; tone: "locked" | "draft" | "none" };
   job?: { name: string; note: string; running?: boolean };
   active?: boolean;
+  go?: () => void;
 };
 
 export type Step = { label: string; meta: string; done: boolean };
@@ -38,7 +39,7 @@ function Sources({ sources }: { sources: Source[] }) {
     <div style={{ display: "flex", flexDirection: "column" }}>
       {sources.map((source) => (
         <div key={source.name}>
-          <div className={source.active ? "rail-item on" : "rail-item"}>
+          <div className={source.active ? "rail-item on" : "rail-item"} onClick={source.go}>
             <div style={{ width: 5, height: 5, borderRadius: "50%", flex: "0 0 5px",
                           background: source.active ? "var(--accent-bright)" : "#3D4744" }} />
             <div className="mono" style={{ fontSize: 12.5, color: source.active ? "var(--text)" : "var(--muted)",

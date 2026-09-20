@@ -80,10 +80,11 @@ def create_job(conn, workspace_id: int, name: str, data_path: str, schema: DataS
     with conn.transaction():
         with path.open("rb") as handle:
             rows = max(sum(1 for _ in handle) - 1, 0)
+        # the same row the API writes, minus files_expire_at: a try-out CSV is not ours to delete (§8.8)
         source_id = conn.execute(
-            "INSERT INTO sources (workspace_id, name, path, rows, columns, bytes) VALUES (%s, %s, %s, %s, %s, %s) "
-            "RETURNING id",
-            (workspace_id, schema.name, str(path), rows, len(schema.columns), path.stat().st_size),
+            "INSERT INTO sources (workspace_id, name, original_name, path, rows, columns, bytes, status) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, 'ready') RETURNING id",
+            (workspace_id, schema.name, path.name, str(path), rows, len(schema.columns), path.stat().st_size),
         ).fetchone()["id"]
         schema_id = conn.execute(
             "INSERT INTO schemas (source_id, version, status, columns, locked_at) "

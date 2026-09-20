@@ -3,8 +3,12 @@ sweep.py
 --------
 The seven-day sweep (A4): a finished job's run directory and checkpoints are
 deleted once files_expire_at passes. The job row, its report, events and usage
-stay. Sources are left alone: in Phase 2 they point at files the platform
-doesn't own (the try-out CSVs).
+stay.
+
+An uploaded source goes the same way seven days after it was last used, not
+after it was uploaded, so a dataset still being run against doesn't vanish
+underneath anyone (docs/PHASE4.md §8.7). Its row, profile and schemas stay, so
+the history still reads; only the CSV goes.
 """
 
 from __future__ import annotations
@@ -12,11 +16,13 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from api import files   # only for where uploads live: one rule, so the two can't drift
 from worker import jobs
 
 
 def sweep(pool, saver) -> list:
     """Expire what is due; returns the job ids."""
+    sweep_sources(pool)
     with pool.connection() as conn:
         due = conn.execute(
             "SELECT id, run_dir FROM jobs WHERE files_expire_at < now() AND NOT files_expired ORDER BY id"
@@ -32,3 +38,19 @@ def sweep(pool, saver) -> list:
             conn.execute("UPDATE jobs SET files_expired = true WHERE id = %s", (job["id"],))
         print(f"job {job['id']}: files expired", flush=True)
     return [job["id"] for job in due]
+
+
+def sweep_sources(pool) -> list:
+    """Delete the CSVs of sources past their day; the rows and their profiles stay."""
+    with pool.connection() as conn:
+        due = conn.execute(
+            "SELECT id, path FROM sources WHERE files_expire_at < now() AND status <> 'expired' "
+            "AND path IS NOT NULL ORDER BY id"
+        ).fetchall()
+    for source in due:
+        # the path comes from the database, so files.remove decides whether it is ours to delete
+        files.remove(source["path"])
+        with pool.connection() as conn:
+            conn.execute("UPDATE sources SET status = 'expired', path = NULL WHERE id = %s", (source["id"],))
+        print(f"source {source['id']}: file expired", flush=True)
+    return [source["id"] for source in due]

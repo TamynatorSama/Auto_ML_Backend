@@ -3,7 +3,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 
 import { useMe } from "./api";
 import { Forgot, LogIn, Reset, SignUp, Verify, Welcome } from "./screens/Auth";
-import { Home } from "./screens/Home";
+import { Console } from "./screens/Console";
 
 export function App() {
   const me = useMe();
@@ -33,7 +33,13 @@ export function App() {
         !signedIn ? <Navigate to="/login" replace />
           : me.data!.workspace ? <Navigate to={`/${me.data!.workspace.slug}`} replace />
             : <Welcome />} />
-      <Route path="/:ws" element={signedIn ? <Home me={me.data!} /> : <Navigate to="/login" replace />} />
+      <Route path="/:ws" element={signedIn ? <Console me={me.data!} at="Data" /> : <Navigate to="/login" replace />} />
+      <Route path="/:ws/s/:sourceId" element={
+        signedIn ? <Console me={me.data!} at="Data" /> : <Navigate to="/login" replace />} />
+      <Route path="/:ws/s/:sourceId/preview" element={
+        signedIn ? <Console me={me.data!} at="Preview" /> : <Navigate to="/login" replace />} />
+      <Route path="/:ws/s/:sourceId/schema" element={
+        signedIn ? <Console me={me.data!} at="Schema" /> : <Navigate to="/login" replace />} />
       <Route path="*" element={
         <Navigate to={signedIn ? (me.data!.workspace ? `/${me.data!.workspace.slug}` : "/welcome") : "/login"} replace />} />
     </Routes>

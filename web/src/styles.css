@@ -177,3 +177,88 @@ a:hover { color: #37d3ae; }
   .rail { width: 100%; flex: 0 0 auto; border-right: 0; border-bottom: 1px solid var(--line); }
   .top { padding: 0 20px; overflow-x: auto; }
 }
+
+/* the Preview table: sticky heads, one row per CSV row */
+.grid { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 12.5px; }
+.grid th {
+  position: sticky;
+  top: 0;
+  background: #151b19;
+  border-bottom: 1px solid var(--edge);
+  border-right: 1px solid #1e2523;
+  padding: 7px 12px;
+  text-align: left;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.grid th.num-head { text-align: right; color: var(--faint); font-size: 11px; width: 60px; padding: 8px 10px; }
+.grid td {
+  border-bottom: 1px solid #1a201e;
+  border-right: 1px solid #161b19;
+  padding: 6px 12px;
+  white-space: nowrap;
+}
+.grid td.num-cell { text-align: right; color: var(--faint); font-size: 11.5px; padding: 6px 10px; }
+.grid tbody tr:hover { background: #161c1a; }
+
+.pager {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--dim);
+  background: transparent;
+  border: 1px solid var(--edge);
+  border-radius: 3px;
+  padding: 4px 9px;
+  cursor: pointer;
+}
+.pager:hover:not(:disabled) { border-color: #46524f; color: var(--text); }
+.pager:disabled { color: var(--faint); border-color: var(--line); cursor: default; }
+
+/* something is happening on the server: the dot the Data card shows while it waits */
+.pulse {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 50%;
+  background: var(--accent-bright);
+  animation: pulseDot 1.6s ease-in-out infinite;
+}
+@keyframes pulseDot { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+/* the Schema table: a grid, so every row's cells line up while the page scrolls sideways */
+.srow {
+  display: grid;
+  gap: 14px;
+  padding: 13px 24px;
+  min-width: 1080px;
+  align-items: center;
+  border-bottom: 1px solid #1a201e;
+}
+.srow:last-child { border-bottom: none; }
+.srow:not(.head):hover { background: #151b19; }
+.srow.head {
+  background: #151b19;
+  border-bottom: 1px solid var(--edge);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+  text-transform: uppercase;
+}
+
+.cell {
+  width: 100%;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--panel);
+  color: #d8e0dd;
+  font-size: 12.5px;
+  outline: none;
+}
+select.cell { font-family: var(--mono); cursor: pointer; }
+input.cell { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; }
+.cell:hover:not(:disabled) { border-color: #46524f; }
+.cell:focus { border-color: var(--accent); }
+.cell:disabled { color: var(--dim); cursor: default; background: var(--card); }
+

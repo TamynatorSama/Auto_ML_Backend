@@ -2,8 +2,9 @@
 The worker: python -m worker
 
 Claims tasks from Postgres and runs up to AUTOML_WORKER_TASKS of them at once,
-each in its own thread, with at most AUTOML_WORKER_PLANS plans among them
-(docs/PHASE2.md, docs/PHASE2B.md). While a task runs, a thread refreshes its
+each in its own thread, with at most AUTOML_WORKER_PLANS of the memory-heavy
+kinds among them — plan, profile and analyze each hold a whole CSV in memory
+(docs/PHASE2.md, docs/PHASE2B.md, docs/PHASE4.md §4). While a task runs, a thread refreshes its
 heartbeat; the main loop puts back tasks whose heartbeat went stale, and once a
 day runs the sweep. Jobs training on one host share it through the fair pool.
 
@@ -22,7 +23,7 @@ from dotenv import load_dotenv
 
 import db
 from utils.reusable import hooks
-from worker import crypto, jobs, queue
+from worker import crypto, jobs, queue, sources
 from worker.hooks import WorkerHooks
 from worker.sweep import sweep
 
@@ -31,7 +32,7 @@ HEARTBEAT_SECONDS = 10
 REQUEUE_SECONDS = 30
 SWEEP_SECONDS = 24 * 3600
 TASKS = int(os.environ.get("AUTOML_WORKER_TASKS") or 8)
-PLANS = int(os.environ.get("AUTOML_WORKER_PLANS") or 2)   # planning holds a whole CSV in memory
+HEAVY = int(os.environ.get("AUTOML_WORKER_PLANS") or 2)   # queue.HEAVY each hold a whole CSV in memory
 
 
 def _heartbeat(pool, task_id: int, done: threading.Event) -> None:
@@ -44,7 +45,8 @@ def _heartbeat(pool, task_id: int, done: threading.Event) -> None:
 
 
 def run_task(pool, saver, worker_hooks: WorkerHooks, task: dict) -> None:
-    print(f"task {task['id']}: {task['kind']} job {task['job_id']} (try {task['tries']})", flush=True)
+    owner = f"job {task['job_id']}" if task["job_id"] is not None else f"source {task['source_id']}"
+    print(f"task {task['id']}: {task['kind']} {owner} (try {task['tries']})", flush=True)
     done = threading.Event()
     threading.Thread(target=_heartbeat, args=(pool, task["id"], done), daemon=True).start()
     error = None
@@ -53,10 +55,15 @@ def run_task(pool, saver, worker_hooks: WorkerHooks, task: dict) -> None:
     except Exception as exc:
         traceback.print_exc()
         error = f"{task['kind']} failed: {exc!r}"
-        jobs.fail(pool, task["job_id"], error)
+        if task["job_id"] is not None:
+            jobs.fail(pool, task["job_id"], error)
+        else:
+            # a source's error is shown to the person, so it reads as a sentence, not a repr
+            sources.fail(pool, task["source_id"], str(exc) or error, task["kind"])
     finally:
         done.set()
-        worker_hooks.forget(task["job_id"])
+        if task["job_id"] is not None:
+            worker_hooks.forget(task["job_id"])
     with pool.connection() as conn:
         queue.finish(conn, task["id"], error)
     print(f"task {task['id']}: {'failed' if error else 'done'}", flush=True)
@@ -71,7 +78,8 @@ def main() -> None:
     saver = db.checkpointer(pool)
     worker_hooks = WorkerHooks(pool, crypto.secret_key())
     hooks.install(worker_hooks)
-    print(f"worker ready: up to {TASKS} tasks at once, {PLANS} of them plans", flush=True)
+    print(f"worker ready: up to {TASKS} tasks at once, {HEAVY} of them memory-heavy "
+          f"({', '.join(queue.HEAVY)})", flush=True)
 
     running: dict = {}   # thread -> task
     last_requeue = last_sweep = float("-inf")
@@ -88,9 +96,9 @@ def main() -> None:
                 sweep(pool, saver)
                 last_sweep = now
             if len(running) < TASKS:
-                plans = sum(task["kind"] == "plan" for task in running.values())
+                heavy = sum(task["kind"] in queue.HEAVY for task in running.values())
                 with pool.connection() as conn:
-                    task = queue.claim(conn, None if plans < PLANS else ["train"])
+                    task = queue.claim(conn, None if heavy < HEAVY else list(queue.LIGHT))
         except psycopg.OperationalError as error:   # the tunnel or the database is down: wait
             print(f"database unavailable: {error}", flush=True)
         if task is None:
