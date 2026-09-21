@@ -6,16 +6,22 @@ main.graph with a Postgres checkpointer, thread id = job id, so wherever a
 task left the thread, the next task carries on from there:
 
     plan   runs planning with review on; the graph pauses at review_plan, and
-           the drafted plan goes into jobs.plan
+           the drafted plan goes into jobs.plan. A task marked restart (a redraft)
+           throws the thread away first, so planning starts from nothing
     train  continues the thread from wherever its checkpoint is:
                paused at review   -> resumed with the approved edits
                mid-run            -> invoke(None); finished models are read back
                finished, stopped  -> the pipeline's resume_run(run_dir)
+
+Both set the run's limits first, seeding its spend from the ledger, so a task
+that was requeued carries on under the cap it had already been spending against
+(docs/PHASE5.md §8.3).
 """
 
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from langgraph.types import Command
@@ -23,6 +29,7 @@ from langgraph.types import Command
 import main
 from code_gen_eval.resume import resume_run
 from db import FILES_KEPT_DAYS, jsonb
+from db import jobs as job_state
 from models import DataSchema
 from utils.reusable import hooks
 from worker import sources
@@ -61,12 +68,23 @@ def total_usage(conn, job_id: int) -> None:
     )
 
 
+def set_limits(conn, job_id: int) -> None:
+    """The job's cap and deadline, with what it has already spent read back from the ledger."""
+    row = job_state.limits(conn, job_id)
+    hooks.seed_spend(job_id, float(row["spent_usd"]))
+    hooks.set_limits(job_id, row["budget_usd"],
+                     None if row["seconds_left"] is None else time.time() + float(row["seconds_left"]))
+
+
 def plan(pool, saver, task: dict) -> None:
     job_id = task["job_id"]
     with pool.connection() as conn:
         job = load(conn, job_id)
+        set_limits(conn, job_id)
     run_dir = RUNS_ROOT / str(job["workspace_id"]) / str(job_id)   # P10
     hooks.emit(job_id, "stage", stage="planning")
+    if (task.get("payload") or {}).get("restart"):
+        saver.delete_thread(str(job_id))
 
     graph, config = main.graph.compile(checkpointer=saver), thread(job_id)
     snapshot = graph.get_state(config)
@@ -99,6 +117,7 @@ def train(pool, saver, task: dict) -> None:
             "started_at = coalesce(started_at, now()) WHERE id = %s",
             (job_id,),
         )
+        set_limits(conn, job_id)   # after started_at: the deadline runs from it
     hooks.emit(job_id, "stage", stage="training")
     if BACKEND == "sandbox":
         clear_sandboxes(job_id)

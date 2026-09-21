@@ -23,9 +23,10 @@ from dotenv import load_dotenv
 
 import db
 from utils.reusable import hooks
-from worker import crypto, jobs, queue, sources
+from db import crypto
+from worker import jobs, queue, sources
 from worker.hooks import WorkerHooks
-from worker.sweep import sweep
+from worker.sweep import sweep, sweep_deleted
 
 POLL_SECONDS = 2
 HEARTBEAT_SECONDS = 10
@@ -56,7 +57,7 @@ def run_task(pool, saver, worker_hooks: WorkerHooks, task: dict) -> None:
         traceback.print_exc()
         error = f"{task['kind']} failed: {exc!r}"
         if task["job_id"] is not None:
-            jobs.fail(pool, task["job_id"], error)
+            jobs.fail(pool, task["job_id"], worker_hooks.scrub(task["job_id"], error))
         else:
             # a source's error is shown to the person, so it reads as a sentence, not a repr
             sources.fail(pool, task["source_id"], str(exc) or error, task["kind"])
@@ -91,6 +92,9 @@ def main() -> None:
             if now - last_requeue >= REQUEUE_SECONDS:
                 with pool.connection() as conn:
                     queue.requeue_stale(conn)
+                # a deleted run's files and thread, on this cadence rather than the
+                # daily sweep: pressing Delete should not leave them for a day
+                sweep_deleted(pool, saver)
                 last_requeue = now
             if now - last_sweep >= SWEEP_SECONDS:
                 sweep(pool, saver)

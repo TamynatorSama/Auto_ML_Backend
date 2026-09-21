@@ -43,6 +43,8 @@ def load_run(run_dir: str | Path) -> Optional[Tuple[RunContext, Configs]]:
         "max_concurrency": concurrency,
         "n_jobs": min(context.n_jobs, plan.n_jobs),
         "worker_memory_mb": plan.worker_memory_mb,
+        "reserve_memory_mb": plan.reserve_memory_mb,
+        "reserve_cpus": plan.reserve_cpus,
         "resource_plan": f"re-planned on resume: {plan.reason}",
     })
     return context, config

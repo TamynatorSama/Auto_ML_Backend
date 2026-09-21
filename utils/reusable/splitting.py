@@ -74,6 +74,9 @@ _METHODS = {
     "grouped": _grouped_split,
 }
 
+# the only methods apply_split_plan accepts; the Config screen offers these and nothing else
+METHODS = tuple(_METHODS)
+
 
 def apply_split_plan(df: pd.DataFrame, plan: SplitPlan) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Cut one frame into (train, test) exactly as the plan describes."""

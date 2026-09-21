@@ -2,7 +2,9 @@
 pool.py
 -------
 One sandbox host's memory and CPUs, shared fairly between the jobs training on
-it (docs/PHASE2B.md §3). A sandbox run asks for its memory and CPUs and waits in
+it (docs/PHASE2B.md §3). A sandbox run asks for the memory and CPUs it is expected
+to use — not the ceiling it is killed above, nor the cores it may burst to
+(utils/reusable/resources.py) — and waits in
 line; when places free up, the run whose job has the fewest sandboxes running
 goes first, and between runs of one job, the one that asked first. The first in
 line is never skipped for a smaller run behind it, so a large run can't starve.
@@ -19,17 +21,9 @@ from contextlib import contextmanager
 from typing import Callable, Optional
 
 from utils.reusable.hooks import RunStopped
+from utils.reusable.resources import usable_cpus   # noqa: F401  (re-exported: the pool applies it)
 
 WAIT_SECONDS = 1   # how often a run in line checks for a stop
-
-
-def usable_cpus(cpus: float) -> float:
-    """What sandboxes may reserve on a host with this many CPUs.
-
-    A quarter (at least one) stays free for gVisor, the sandbox server and the rest of the
-    machine: with all 8 of 8 reserved, attempts ran about twice as slow and one timed out.
-    """
-    return max(1.0, cpus - max(1.0, cpus // 4))
 
 
 class HostPool:

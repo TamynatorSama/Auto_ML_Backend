@@ -231,8 +231,11 @@ def _sandbox_execute(
         labels={"run": str(context.run_id), "model": out_dir.parent.name,
                 "attempt": out_dir.name.removeprefix("attempt_"), "step": step},
     )
-    # held from create to delete: in the worker, other jobs' sandboxes queue for the same host
-    with hooks.sandbox_slot(context.run_id, spec["memory_mb"], spec["cpus"]):
+    # held from create to delete: in the worker, other jobs' sandboxes queue for the same
+    # host. What is reserved is what the attempt is expected to need, not the ceiling it is
+    # killed above — reserving the ceiling let one sandbox hold the whole budget (docs/PHASE5.md §23)
+    reserve = min(spec["memory_mb"], context.reserve_memory_mb or spec["memory_mb"])
+    with hooks.sandbox_slot(context.run_id, reserve, context.reserve_cpus or spec["cpus"]):
         try:
             sandbox = client.create_sandbox(**spec, volume=_run_volume(client, context, data))
         except SandboxError as error:

@@ -61,7 +61,11 @@ class RunContext(BaseModel):
     # how many models train at once, and what one worker is expected to need;
     # planned from the machine and the data when the run starts
     max_concurrency: int = 2
+    # the ceiling a sandbox is killed above, and what the worker's pool counts
+    # against the host while it runs — see utils/reusable/resources.py
     worker_memory_mb: float = 0.0
+    reserve_memory_mb: float = 0.0
+    reserve_cpus: float = 0.0
     resource_plan: str = ""
     plan_fingerprint: str = ""
 

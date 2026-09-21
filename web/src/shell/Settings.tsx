@@ -1,7 +1,9 @@
 import { useState, type ReactNode } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
-import { api, type Me, type Workspace } from "../api";
+import { api, PROVIDER_NAMES, removeKey, saveKey, useProviders,
+         type Me, type ProviderKey, type Workspace } from "../api";
+import { when } from "../format";
 import { Note } from "../ui";
 
 /**
@@ -127,25 +129,58 @@ function ReadOnly({ label, value, hint }: { label: string; value: string; hint: 
   );
 }
 
-/** One model provider, in the canvas's shape; keys themselves arrive with Phase 5. */
-function Provider({ name, models, status }: { name: string; models: string; status: "ready" | "later" }) {
-  const ready = status === "ready";
+/**
+ * One model provider. A key is checked against the provider before it is stored,
+ * and never comes back: the card shows its last four characters and nothing else
+ * (docs/PHASE5.md §5). The four providers that aren't built yet sit here greyed,
+ * in their real place.
+ */
+function Provider({ ws, row }: { ws: string; row: ProviderKey }) {
+  const known = PROVIDER_NAMES[row.provider] ?? { name: row.provider, models: "", placeholder: "" };
+  const queries = useQueryClient();
+  const [key, setKey] = useState("");
+  const reload = () => queries.invalidateQueries({ queryKey: ["providers", ws] });
+
+  const save = useMutation({ mutationFn: () => saveKey(ws, row.provider, key),
+                             onSuccess: () => { setKey(""); reload(); } });
+  const drop = useMutation({ mutationFn: () => removeKey(ws, row.provider), onSuccess: reload });
+  const busy = save.isPending || drop.isPending;
+
   return (
     <div style={cardStyle}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
-        <div style={{ fontSize: 14, color: ready ? "var(--text)" : "var(--dim)" }}>{name}</div>
+        <div style={{ fontSize: 14, color: row.available ? "var(--text)" : "var(--dim)" }}>{known.name}</div>
         <div className="mono" style={{ fontSize: 10.5, borderRadius: 3, padding: "2px 6px",
-                                       color: ready ? "var(--accent-bright)" : "var(--faint)",
-                                       border: `1px solid ${ready ? "#1B3F36" : "var(--edge)"}` }}>
-          {ready ? "no key" : "not yet"}
+                                       color: row.last4 ? "var(--accent-bright)"
+                                                        : row.available ? "#C9873F" : "var(--faint)",
+                                       border: `1px solid ${row.last4 ? "#1B3F36"
+                                                          : row.available ? "#3E3122" : "var(--edge)"}` }}>
+          {row.last4 ? `…${row.last4}` : row.available ? "no key" : "not yet"}
         </div>
-        <div className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>{models}</div>
+        {row.verified_at && (
+          <div className="mono" style={{ fontSize: 10.5, color: "var(--faint)" }}>
+            checked {when(row.verified_at)}
+          </div>
+        )}
+        <div className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>{known.models}</div>
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <input style={{ ...box, flex: "1 1 260px", fontFamily: "var(--mono)", fontSize: 12, color: "var(--faint)" }}
-               placeholder={ready ? "AIza…" : "greyed out until a provider is proven (A2)"} disabled />
-        <button className="btn ghost" disabled>Verify &amp; save</button>
+        <input style={{ ...box, flex: "1 1 260px", fontFamily: "var(--mono)", fontSize: 12,
+                        color: row.available ? "var(--text)" : "var(--faint)" }}
+               type="password" autoComplete="off" value={key} disabled={!row.available || busy}
+               placeholder={row.available ? known.placeholder : "greyed out until a provider is proven (A2)"}
+               onChange={(event) => setKey(event.target.value)} />
+        <button className="btn ghost" disabled={!row.available || busy || !key.trim()}
+                onClick={() => save.mutate()}>
+          {save.isPending ? "Checking…" : "Verify & save"}
+        </button>
+        {row.last4 && (
+          <button className="btn ghost" disabled={busy} onClick={() => drop.mutate()}>
+            {drop.isPending ? "Removing…" : "Remove"}
+          </button>
+        )}
       </div>
+      <Note>{(save.error as Error | null)?.message ?? (drop.error as Error | null)?.message ?? ""}</Note>
     </div>
   );
 }
@@ -183,6 +218,9 @@ function Runner({ name, where, meta, status, action }: {
 export function Settings({ me, workspace, onClose }: { me: Me; workspace: Workspace; onClose: () => void }) {
   const [tab, setTab] = useState<TabId>("account");
   const queries = useQueryClient();
+  const providers = useProviders(workspace.slug);
+  const saved = (providers.data?.providers ?? []).filter((row) => row.last4).length;
+  const offered = (providers.data?.providers ?? []).length;
 
   const bodies: Record<TabId, ReactNode> = {
     account: (
@@ -219,14 +257,13 @@ export function Settings({ me, workspace, onClose }: { me: Me; workspace: Worksp
         <Label>Model providers</Label>
         <Lead>
           Bring your own key for the models that infer schemas, draft a plan and write each candidate script.
-          Keys are stored per workspace, encrypted, and never reach a sandbox. Saving one arrives with jobs.
+          A key is checked against the provider before it is stored, kept encrypted per workspace, and never
+          reaches a sandbox or comes back to this screen.
         </Lead>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <Provider name="Google" models="gemini-2.5-flash · pro" status="ready" />
-          <Provider name="Anthropic" models="claude-opus-5 · sonnet-5" status="later" />
-          <Provider name="OpenAI" models="gpt-5 · o4-mini" status="later" />
-          <Provider name="Mistral" models="mistral-large-2 · codestral" status="later" />
-          <Provider name="xAI" models="grok-4" status="later" />
+          {(providers.data?.providers ?? []).map((row) => (
+            <Provider key={row.provider} ws={workspace.slug} row={row} />
+          ))}
         </div>
 
         <div className="rule" style={{ margin: "22px 0 18px" }} />
@@ -317,7 +354,7 @@ export function Settings({ me, workspace, onClose }: { me: Me; workspace: Worksp
   const footer: Record<TabId, string> = {
     account: me.user.has_password ? "signed in with a password · sessions last 30 days from last use"
                                   : "signed in with a provider · sessions last 30 days from last use",
-    workspace: "0 of 5 providers connected · keys are encrypted at rest",
+    workspace: `${saved} of ${offered} providers connected · keys are encrypted at rest`,
     compute: "active runner: the AutoML sandbox · your own machine comes later",
     data: "files kept 7 days · reports, scores and usage stay",
     members: "1 person · invitations come after the beta",

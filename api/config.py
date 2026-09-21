@@ -17,5 +17,5 @@ def oauth_state_secret() -> str:
     """Signs the short-lived OAuth state cookie; derived from AUTOML_SECRET_KEY, so .env needs nothing new."""
     key = os.environ.get("AUTOML_SECRET_KEY")
     if not key:
-        raise RuntimeError("AUTOML_SECRET_KEY is not set (see worker/crypto.py)")
+        raise RuntimeError("AUTOML_SECRET_KEY is not set (see db/crypto.py)")
     return hashlib.sha256(b"automl oauth state|" + key.encode()).hexdigest()

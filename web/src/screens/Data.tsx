@@ -1,7 +1,7 @@
 import { useRef, useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
-import { deleteSource, loadSample, uploadCsv, WORKING, type Source } from "../api";
+import { deleteSource, loadSample, uploadCsv, WORKING, type Job, type Source } from "../api";
 import { bytes, compact, count, percent, until, when } from "../format";
 
 /** What the card says while a source is still being read (§5). */
@@ -136,12 +136,17 @@ function Drop({ ws, busy, onDone, replacing }: {
   );
 }
 
-export function Data({ ws, source, onPreview, onPick, onSchema }: {
+export function Data({ ws, source, job, first, onPreview, onPick, onSchema, onJob }: {
   ws: string;
   source: Source | null;
+  /** this source's newest run, if it has one */
+  job: Job | null;
+  /** the workspace has no datasets at all, so this is the first one */
+  first: boolean;
   onPreview: (id: number) => void;
   onPick: (id: number | null) => void;
   onSchema: (id: number) => void;
+  onJob: (id: number) => void;
 }) {
   const queries = useQueryClient();
   const remove = useMutation({
@@ -155,11 +160,12 @@ export function Data({ ws, source, onPreview, onPick, onSchema }: {
         <div style={{ maxWidth: 560, marginBottom: 30 }}>
           <div className="label" style={{ color: "var(--faint)", marginBottom: 12 }}>Step 1 · data source</div>
           <div style={{ fontSize: 27, letterSpacing: "-0.015em", color: "var(--bright)", marginBottom: 12 }}>
-            No data connected yet
+            {first ? "No data connected yet" : "Add a dataset"}
           </div>
           <div style={{ fontSize: 14.5, lineHeight: 1.6, color: "var(--muted)" }}>
             Every job starts from one table. Drop a CSV in and it is checked, counted and profiled column by
             column — then you correct its schema and lock a version.
+            {first ? "" : " The datasets you already have are in the rail; this one joins them."}
           </div>
         </div>
         <Drop ws={ws} busy={false} replacing={false} onDone={(made) => onPick(made.id)} />
@@ -256,13 +262,26 @@ export function Data({ ws, source, onPreview, onPick, onSchema }: {
         </Panel>
 
         <Panel title="Job" chip={<div className="mono" style={{ fontSize: 11, color: "var(--dim)" }}>one per source</div>}
-               footer={<button className="btn ghost" disabled title="Running a job from the console arrives in Phase 5"
-                               style={{ width: "100%", marginTop: 18 }}>Open job configuration</button>}>
-          <div style={{ border: "1px dashed var(--edge)", borderRadius: 4, padding: "13px 15px",
-                        fontSize: 13, color: "var(--faint)", lineHeight: 1.55 }}>
-            No job yet. Lock a schema first; starting a job from the console arrives in the next release, and
-            until then jobs are started from the command line.
-          </div>
+               footer={<button className="btn ghost" disabled={!job} onClick={() => job && onJob(job.id)}
+                               title={job ? undefined : "Lock a schema, then press New job"}
+                               style={{ width: "100%", marginTop: 18 }}>
+                         {job ? "Open this run" : "Open job configuration"}
+                       </button>}>
+          {job ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
+              <Row left="Latest run" right={`#${job.id}`} />
+              <Row left="Status" right={job.status} />
+              <Row left="Started" right={job.started_at ? when(job.started_at) : "not yet"} />
+              <Row left="Spend" right={job.usage_totals?.cost_usd
+                ? `$${job.usage_totals.cost_usd.toFixed(4)}` : "—"} />
+            </div>
+          ) : (
+            <div style={{ border: "1px dashed var(--edge)", borderRadius: 4, padding: "13px 15px",
+                          fontSize: 13, color: "var(--faint)", lineHeight: 1.55 }}>
+              No run yet. Lock the schema, then press <span style={{ color: "var(--muted)" }}>New job</span>
+              {" "}up in the corner.
+            </div>
+          )}
         </Panel>
       </div>
 

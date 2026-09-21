@@ -13,8 +13,10 @@ variables surviving LangGraph's thread pool.
     sandbox_slot(run_id, memory_mb, cpus)  held while one sandbox exists: the worker
                                         queues it fairly with other jobs' sandboxes
     set_limits(run_id, budget_usd=None, deadline=None)
+    seed_spend(run_id, cost_usd)        what the run had already spent before this task
     request_stop(run_id, reason="stop requested")
     spend(run_id) -> {"input_tokens", "output_tokens", "cost_usd"}
+    api_key(run_id) -> str | None       None: the environment's GOOGLE_API_KEY
     install(hooks)
 
 The defaults serve the command line: events are not recorded (the pipeline
@@ -90,11 +92,17 @@ class Hooks:
             return "deadline"
         return None
 
+    def api_key(self, run_id) -> Optional[str]:
+        """The key this run's LLM calls use; None leaves langchain to read GOOGLE_API_KEY."""
+        return None
+
     def llm_for(self, run_id, role: str):
         from langchain_google_genai import ChatGoogleGenerativeAI
 
+        key = self.api_key(run_id)
         return ChatGoogleGenerativeAI(
-            model=MODEL, temperature=TEMPERATURE[role], callbacks=[_CountTokens(self, run_id, role, MODEL)]
+            model=MODEL, temperature=TEMPERATURE[role], callbacks=[_CountTokens(self, run_id, role, MODEL)],
+            **({"google_api_key": key} if key else {}),
         )
 
     def sandbox_for(self, run_id):
@@ -121,6 +129,12 @@ class Hooks:
     def set_limits(self, run_id, budget_usd: Optional[float] = None, deadline: Optional[float] = None) -> None:
         run = self._run(run_id)
         run.budget_usd, run.deadline = budget_usd, deadline
+
+    def seed_spend(self, run_id, cost_usd: float) -> None:
+        """What the run had spent before this process saw it, so a restart can't reset the cap."""
+        run = self._run(run_id)
+        with self._lock:
+            run.cost_usd = cost_usd
 
     def request_stop(self, run_id, reason: str = "stop requested") -> None:
         self._run(run_id).stop = reason
@@ -177,6 +191,10 @@ def set_limits(run_id, budget_usd: Optional[float] = None, deadline: Optional[fl
 
 def request_stop(run_id, reason: str = "stop requested") -> None:
     _hooks.request_stop(run_id, reason)
+
+
+def seed_spend(run_id, cost_usd: float) -> None:
+    _hooks.seed_spend(run_id, cost_usd)
 
 
 def spend(run_id) -> dict:

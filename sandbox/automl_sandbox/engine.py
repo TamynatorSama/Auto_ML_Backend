@@ -177,7 +177,12 @@ class Engine:
                     tmpfs={"/tmp": f"rw,size={cfg.tmp_mb}m,mode=1777"}, volumes=mounts, working_dir="/work",
                     user=cfg.sandbox_user, cap_drop=["ALL"], security_opt=["no-new-privileges"],
                     pids_limit=cfg.pids_limit, mem_limit=f"{memory_mb}m", memswap_limit=f"{memory_mb}m",
-                    nano_cpus=int(cpus * 1e9),
+                    # CPU is shared, not partitioned: the ceiling is the per-sandbox cap every
+                    # request is already checked against, and the weight settles the split when
+                    # they are all busy, so an idle neighbour's cores go to whoever can use them.
+                    # Memory cannot work this way - past its limit the kernel kills the process.
+                    nano_cpus=int(cfg.max_cpus * 1e9),
+                    cpu_shares=max(2, int(1024 * cpus / cfg.max_cpus)),
                 )
             except Exception:
                 self._remove_sandbox(sid)

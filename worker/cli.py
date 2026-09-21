@@ -15,6 +15,9 @@ What the Config screen will do, until the web app has it (Phases 4 and 5):
 
 A host without --workspace is the platform's own; with one, it runs only that
 workspace's jobs (D11). The token is read from --token-env, or asked for.
+
+approve, stop and resume are db/jobs.py's: the browser calls the same functions,
+so the two can't drift apart (docs/PHASE5.md §8.1).
 """
 
 from __future__ import annotations
@@ -29,8 +32,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 import db
+from db import jobs as job_state
 from models import DataSchema
-from worker import crypto, queue
+from db import crypto
 
 DEFAULT_WORKSPACE = "default"
 
@@ -59,23 +63,8 @@ def add_host(conn, url: str, token: str, key: str, workspace_id: int | None = No
     ).fetchone()["id"]
 
 
-def host_for(conn, workspace_id: int) -> int:
-    """The workspace's own host if it has one, else the platform's."""
-    row = conn.execute(
-        """
-        SELECT id FROM sandbox_hosts
-        WHERE (owner_workspace_id = %s OR owner_workspace_id IS NULL) AND status <> 'disabled'
-        ORDER BY owner_workspace_id IS NULL, id LIMIT 1
-        """,
-        (workspace_id,),
-    ).fetchone()
-    if row is None:
-        raise SystemExit("no sandbox host: add one with `python -m worker.cli add-host URL`")
-    return row["id"]
-
-
 def create_job(conn, workspace_id: int, name: str, data_path: str, schema: DataSchema) -> int:
-    """A source, its schema locked as version 1, the job, and its plan task."""
+    """A source, its schema locked as version 1, and the job db/jobs.py makes from them."""
     path = Path(data_path)
     with conn.transaction():
         with path.open("rb") as handle:
@@ -91,12 +80,7 @@ def create_job(conn, workspace_id: int, name: str, data_path: str, schema: DataS
             "VALUES (%s, 1, 'locked', %s, now()) RETURNING id",
             (source_id, db.jsonb(schema.model_dump(mode="json"))),
         ).fetchone()["id"]
-        job_id = conn.execute(
-            "INSERT INTO jobs (workspace_id, source_id, schema_id, sandbox_host_id, name) "
-            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
-            (workspace_id, source_id, schema_id, host_for(conn, workspace_id), name),
-        ).fetchone()["id"]
-        queue.enqueue(conn, "plan", job_id)
+        job_id = job_state.create(conn, workspace_id, source_id, schema_id, name)
     return job_id
 
 
@@ -109,52 +93,6 @@ def allow(conn, emails: list) -> None:
 def disallow(conn, emails: list) -> None:
     # stops new sign-ups only; an account already made stays
     conn.execute("DELETE FROM signup_allowlist WHERE email = ANY(%s)", ([email.strip().lower() for email in emails],))
-
-
-def approve(conn, job_id: int, edits: dict | None = None) -> None:
-    with conn.transaction():
-        updated = conn.execute(
-            "UPDATE jobs SET status = 'queued', edits = %s WHERE id = %s AND status = 'review' RETURNING id",
-            (db.jsonb(edits or {}), job_id),
-        ).fetchone()
-        if updated is None:
-            raise SystemExit(f"job {job_id} is not waiting for review")
-        queue.enqueue(conn, "train", job_id)
-
-
-def stop(conn, job_id: int) -> str:
-    """A queued job stops at once; a running one at its next check, between attempts."""
-    with conn.transaction():
-        job = conn.execute("SELECT status FROM jobs WHERE id = %s FOR UPDATE", (job_id,)).fetchone()
-        if job is None or job["status"] not in ("queued", "running"):
-            raise SystemExit(f"job {job_id} is not queued or running")
-        cancelled = conn.execute(
-            "UPDATE tasks SET status = 'cancelled' WHERE job_id = %s AND status = 'queued' RETURNING id", (job_id,)
-        ).fetchone()
-        status = "stopped" if cancelled else "stopping"
-        conn.execute(
-            "UPDATE jobs SET status = %s, cancel_requested = %s WHERE id = %s", (status, not cancelled, job_id)
-        )
-    return status
-
-
-def resume(conn, job_id: int) -> str:
-    """Carry a stopped or failed job on from where its thread is: plan again if it never got a plan."""
-    with conn.transaction():
-        job = conn.execute("SELECT status, plan, files_expired FROM jobs WHERE id = %s FOR UPDATE", (job_id,)).fetchone()
-        if job is None or job["status"] not in ("stopped", "failed"):
-            raise SystemExit(f"job {job_id} is not stopped or failed")
-        if job["files_expired"]:
-            raise SystemExit(f"job {job_id}'s files have expired")
-        kind = "plan" if job["plan"] is None else "train"
-        status = "planning" if kind == "plan" else "queued"
-        conn.execute(
-            "UPDATE jobs SET status = %s, cancel_requested = false, error = NULL, finished_at = NULL, "
-            "files_expire_at = NULL WHERE id = %s",
-            (status, job_id),
-        )
-        queue.enqueue(conn, kind, job_id)
-    return status
 
 
 # ---- the commands
@@ -273,18 +211,20 @@ def main(argv=None) -> None:
             elif args.command == "enqueue":
                 _enqueue(conn, args)
             elif args.command == "approve":
-                approve(conn, args.job, args.edit)
+                job_state.approve(conn, args.job, args.edit)
                 print(f"job {args.job}: queued")
             elif args.command == "stop":
-                print(f"job {args.job}: {stop(conn, args.job)}")
+                print(f"job {args.job}: {job_state.stop(conn, args.job)}")
             elif args.command == "resume":
-                print(f"job {args.job}: {resume(conn, args.job)}")
+                print(f"job {args.job}: {job_state.resume(conn, args.job)}")
             elif args.command in ("allow", "disallow"):
                 (allow if args.command == "allow" else disallow)(conn, args.emails)
                 emails = [row["email"] for row in conn.execute("SELECT email FROM signup_allowlist ORDER BY email")]
                 print(f"allowlist ({len(emails)}): {', '.join(emails) or 'empty'}")
             else:
                 _status(conn, args)
+    except job_state.JobError as error:
+        raise SystemExit(str(error))
     finally:
         pool.close()
 

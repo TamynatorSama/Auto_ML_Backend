@@ -12,6 +12,7 @@ baseline and the guards all import, so there is exactly one definition of every
 number the run reports.
 
     METRIC_DIRECTION[metric]                    -> "higher" | "lower"
+    REGRESSION_METRICS                          the ones that suit a regression
     score(metric, y_true, y_pred, y_proba)      -> float
     is_improvement(best, candidate, ...)        -> bool
     make_cv(plan, n_rows)                       -> sklearn splitter
@@ -23,6 +24,7 @@ from automl_runtime.folds import make_splitter
 from automl_runtime.metrics import (  # noqa: F401  (re-exported)
     METRIC_DIRECTION,
     PROBABILITY_METRICS,
+    REGRESSION_METRICS,
     direction,
     score,
     score_predictions,

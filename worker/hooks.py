@@ -11,7 +11,7 @@ is the job id.
     sandbox_for  a client for the job's own sandbox host (D11), cached per job
     sandbox_slot a place in the fair pool of the job's host, shared with every other
                  job training there (docs/PHASE2B.md)
-    llm_for      unchanged: Gemini from GOOGLE_API_KEY until Phase 5
+    api_key      the workspace's own Gemini key, decrypted for this task only (D1)
 """
 
 from __future__ import annotations
@@ -26,7 +26,8 @@ from psycopg_pool import ConnectionPool
 from code_gen_eval.sandbox_client import SandboxClient
 from db import jsonb
 from utils.reusable.hooks import Hooks, RunStopped
-from worker import crypto
+from db import crypto
+from worker import keys
 from worker.pool import HostPool, usable_cpus
 
 STOP_CHECK_SECONDS = 5
@@ -48,6 +49,7 @@ class WorkerHooks(Hooks):
         self._jobs: dict = {}       # job id -> workspace_id, sandbox_host_id
         self._clients: dict = {}    # job id -> SandboxClient
         self._stop_checked: dict = {}   # job id -> (monotonic time, cancel_requested)
+        self._keys: dict = {}       # job id -> the workspace's model key, in memory only
         self._pools: dict = {}      # host id -> HostPool, for the worker's lifetime
 
     def _job(self, job_id) -> dict:
@@ -64,6 +66,7 @@ class WorkerHooks(Hooks):
         with self._cache_lock:
             self._jobs.pop(job_id, None)
             self._stop_checked.pop(job_id, None)
+            self._keys.pop(job_id, None)
             client = self._clients.pop(job_id, None)
         if client is not None:
             client.http.close()
@@ -163,6 +166,31 @@ class WorkerHooks(Hooks):
             requested = bool(row and row["cancel_requested"])
             self._stop_checked[run_id] = (time.monotonic(), requested)
         return "stop requested" if requested else None
+
+    # ---- the job's model key
+
+    def api_key(self, run_id) -> str:
+        """The workspace's own key (D1), cached for this task and dropped by forget()."""
+        with self._cache_lock:
+            if run_id in self._keys:
+                return self._keys[run_id]
+        workspace_id = self._job(run_id)["workspace_id"]
+        with self.pool.connection() as conn:
+            key = keys.for_workspace(conn, self.secret_key, workspace_id)
+        with self._cache_lock:
+            self._keys[run_id] = key
+        return key
+
+    def scrub(self, job_id, text: str) -> str:
+        """The job's key taken out of anything on its way to the database (§8.6).
+
+        Nothing is known to put it in an exception, but jobs.error is stored as it arrives
+        and shown in the browser, so it is the one place a leak would be permanent. Only a
+        key already cached is scrubbed: this never decrypts one to go looking.
+        """
+        with self._cache_lock:
+            key = self._keys.get(job_id)
+        return text.replace(key, "...") if key else text
 
     # ---- the job's sandbox host
 

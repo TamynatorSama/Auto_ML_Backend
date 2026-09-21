@@ -86,6 +86,35 @@ function Diff({ changes }: { changes: ColumnChange[] }) {
   );
 }
 
+/** The table's own shape while the schema arrives, rather than an empty screen. */
+function SchemaSkeleton() {
+  const rows = Array.from({ length: 9 }, (unused, index) => index);
+  return (
+    <div style={{ padding: "40px 40px 84px", maxWidth: 1240 }}>
+      <div className="skel" style={{ width: 160, height: 28, marginBottom: 12 }} />
+      <div className="skel" style={{ width: 540, height: 14, marginBottom: 7 }} />
+      <div className="skel" style={{ width: 480, height: 14, marginBottom: 26 }} />
+      <div style={{ border: "1px solid var(--line)", borderRadius: 6, background: "var(--card)",
+                    overflow: "hidden" }}>
+        <div style={{ display: "flex", gap: 14, padding: "13px 24px", background: "#151b19",
+                      borderBottom: "1px solid var(--edge)" }}>
+          {[150, 100, 110, 200, 80, 70].map((width) => (
+            <div className="skel" key={width} style={{ width, height: 11 }} />
+          ))}
+        </div>
+        {rows.map((row) => (
+          <div key={row} style={{ display: "flex", gap: 14, padding: "13px 24px",
+                                  borderBottom: "1px solid #1a201e" }}>
+            {[150, 100, 110, 200, 80, 70].map((width) => (
+              <div className="skel" key={width} style={{ width, height: 22 }} />
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function Schema({ ws, source }: { ws: string; source: Source }) {
   const schema = useSchema(ws, source.id);
   const queries = useQueryClient();
@@ -139,9 +168,7 @@ export function Schema({ ws, source }: { ws: string; source: Source }) {
   const noteNames = [...new Set(notes.flatMap((finding) => finding.columns))].join(", ");
   const running = body?.task?.kind === "analyze";
 
-  if (schema.isPending) {
-    return <div className="mono" style={{ padding: 40, color: "var(--faint)" }}>loading…</div>;
-  }
+  if (schema.isPending) return <SchemaSkeleton />;
   if (schema.error || !body || !columns) {
     return (
       <div style={{ padding: 40, color: "var(--muted)" }}>

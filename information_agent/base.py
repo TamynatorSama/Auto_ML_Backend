@@ -30,14 +30,15 @@ from models import (
 from automl_runtime.folds import build_folds, load_folds, save_folds
 from utils.reusable.leakage import add_exclusions, relation_screen, render_screen
 from utils.reusable.summary import profile_dataset, render_profile
-from utils.reusable.splitting import apply_split_plan, write_split
+from utils.reusable.splitting import METHODS as SPLIT_METHODS, apply_split_plan, write_split
 from utils.reusable.baseline import run_baseline
 from utils.reusable.requirements import derive_requirements
 from utils.reusable import hooks
 from utils.reusable.resources import plan_resources
 from utils.reusable.llm import message_text
-from utils.reusable.metrics import METRIC_DIRECTION
+from utils.reusable.metrics import METRIC_DIRECTION, REGRESSION_METRICS
 from utils.reusable.environment import (
+    ALL_MODELS,
     PROVISION_NEVER,
     PROVISION_ONCE,
     available_model_names,
@@ -349,9 +350,14 @@ def review_plan(state: InformationState) -> InformationState:
         return {"resplit": False}
 
     edits = interrupt({
+        # task_type and target are read-only: they come from the locked schema and
+        # the profile, and changing either means a different job (docs/PHASE5.md §8.5)
+        "task_type": state["task_type"],
+        "target": state["target"],
         "split_plan": state["split_plan"].model_dump(),
         "config": state["config"].model_dump(),
         "leakage_screen": state.get("leakage_screen") or [],
+        "choices": review_choices(state),
     }) or {}
     split_plan = SplitPlan(**{**state["split_plan"].model_dump(), **(edits.get("split_plan") or {})})
     config = Configs(**{**state["config"].model_dump(), **(edits.get("config") or {})})
@@ -360,6 +366,30 @@ def review_plan(state: InformationState) -> InformationState:
         "config": config,
         "approved": True,
         "resplit": split_plan != state["split_plan"],
+    }
+
+
+def review_choices(state: InformationState) -> dict:
+    """What the reviewer may pick from, straight out of the registries that enforce it.
+
+    The console offers these and nothing else, so an edit cannot name a split
+    method apply_split_plan would reject, a metric the scorer has never heard of,
+    or a model family this environment cannot import. Unavailable models are
+    listed with the reason rather than hidden: dropping them silently is how a
+    run ends up training four families when you asked for five.
+    """
+    environment = state.get("environment") or {}
+    _, unavailable = resolve_models(ALL_MODELS, environment)
+    regression = state["task_type"] == "regression"
+    return {
+        "models": [{"name": model, "available": model not in unavailable, "why": unavailable.get(model)}
+                   for model in ALL_MODELS],
+        "metrics": [metric for metric in METRIC_DIRECTION
+                    if (metric in REGRESSION_METRICS) == regression],
+        # which way is better, so the console can rank without a table of its own
+        "directions": {metric: direction for metric, direction in METRIC_DIRECTION.items()
+                       if (metric in REGRESSION_METRICS) == regression},
+        "split_methods": list(SPLIT_METHODS),
     }
 
 
@@ -519,6 +549,8 @@ def build_context(state: InformationState) -> InformationState:
         n_jobs=resources.n_jobs,
         max_concurrency=concurrency,
         worker_memory_mb=resources.worker_memory_mb,
+        reserve_memory_mb=resources.reserve_memory_mb,
+        reserve_cpus=resources.reserve_cpus,
         resource_plan=resources.reason,
         plan_fingerprint=state.get("plan_fingerprint", ""),
         backend=state.get("backend", "subprocess"),

@@ -154,3 +154,74 @@ export function Note({ children, ok = false }: { children: ReactNode; ok?: boole
   if (!children) return null;
   return <div className={ok ? "note ok" : "note"}>{children}</div>;
 }
+
+/**
+ * The console's own shape while the workspace is still arriving: the rail, the
+ * step bar and a body, greyed. A blank screen reads as broken; this reads as busy.
+ */
+export function ConsoleSkeleton() {
+  const rows = (count: number) => Array.from({ length: count }, (unused, index) => index);
+  return (
+    <div className="shell">
+      <div className="rail">
+        <div style={{ padding: "20px 20px 18px", borderBottom: "1px solid var(--line)" }}>
+          <Logo />
+        </div>
+        <div style={{ padding: "22px 18px", display: "flex", flexDirection: "column", gap: 14 }}>
+          <div className="skel" style={{ width: 90, height: 11 }} />
+          {rows(3).map((row) => <div className="skel" key={row} style={{ width: "100%", height: 30 }} />)}
+          <div className="rule" style={{ margin: "8px 0" }} />
+          <div className="skel" style={{ width: 60, height: 11 }} />
+          {rows(5).map((row) => <div className="skel" key={row} style={{ width: "86%", height: 14 }} />)}
+        </div>
+      </div>
+      <div className="shell-main">
+        <div className="top">
+          <div style={{ display: "flex", gap: 14 }}>
+            {rows(6).map((row) => <div className="skel" key={row} style={{ width: 86, height: 15 }} />)}
+          </div>
+          <div className="skel" style={{ width: 88, height: 27 }} />
+        </div>
+        <div style={{ padding: "36px 40px", display: "flex", flexDirection: "column", gap: 16 }}>
+          <div className="skel" style={{ width: 240, height: 26 }} />
+          <div className="skel" style={{ width: 460, height: 14 }} />
+          <div className="skel" style={{ width: "100%", maxWidth: 1000, height: 190, marginTop: 10 }} />
+          <div className="skel" style={{ width: "100%", maxWidth: 1000, height: 120 }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** The sign-in card's shape, for the moment before /api/me answers on a public screen. */
+export function AuthSkeleton() {
+  return (
+    <div style={{ height: "100%", background: "var(--bg-deep)", display: "flex", justifyContent: "center",
+                  padding: "40px 32px" }}>
+      <div style={{ width: "100%", maxWidth: 1140, minHeight: "min(600px, 100%)", margin: "auto", display: "flex",
+                    flexWrap: "wrap", border: "1px solid var(--line-soft)", borderRadius: 10,
+                    background: "var(--bg)", overflow: "hidden" }}>
+        <div style={{ flex: "1 1 420px", minWidth: 0, padding: "44px", background: "var(--panel)",
+                      borderRight: "1px solid var(--line-soft)", display: "flex", flexDirection: "column",
+                      gap: 26 }}>
+          <Logo size={30} />
+          <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 12 }}>
+            <div className="skel" style={{ width: "80%", height: 30 }} />
+            <div className="skel" style={{ width: "95%", height: 14 }} />
+            <div className="skel" style={{ width: "70%", height: 14 }} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 }}>
+            {[0, 1, 2].map((tile) => <div className="skel" key={tile} style={{ height: 108 }} />)}
+          </div>
+        </div>
+        <div style={{ flex: "1 1 420px", minWidth: 0, display: "flex", alignItems: "center",
+                      justifyContent: "center", padding: "44px 48px" }}>
+          <div style={{ width: "100%", maxWidth: 400, display: "flex", flexDirection: "column", gap: 14 }}>
+            <div className="skel" style={{ width: "60%", height: 22, margin: "0 auto 10px" }} />
+            {[0, 1, 2].map((row) => <div className="skel" key={row} style={{ height: 42 }} />)}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

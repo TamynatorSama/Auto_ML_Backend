@@ -1,14 +1,23 @@
 import type { ReactElement } from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 
 import { useMe } from "./api";
 import { Forgot, LogIn, Reset, SignUp, Verify, Welcome } from "./screens/Auth";
 import { Console } from "./screens/Console";
+import { AuthSkeleton, ConsoleSkeleton } from "./ui";
+
+// the screens that are reached signed out: everything else is the console
+const PUBLIC = ["/login", "/signup", "/forgot", "/reset", "/verify"];
 
 export function App() {
   const me = useMe();
+  const { pathname } = useLocation();
 
-  if (me.isPending) return <div className="mono" style={{ padding: 40, color: "var(--faint)" }}>loading…</div>;
+  // /api/me is the first request of every reload, so this is what a reload looks
+  // like until it answers: the shape of wherever the address is going, not a blank page
+  if (me.isPending) {
+    return PUBLIC.some((path) => pathname.startsWith(path)) ? <AuthSkeleton /> : <ConsoleSkeleton />;
+  }
   if (me.error) {
     return (
       <div style={{ padding: 40, color: "var(--muted)" }}>
@@ -34,12 +43,20 @@ export function App() {
           : me.data!.workspace ? <Navigate to={`/${me.data!.workspace.slug}`} replace />
             : <Welcome />} />
       <Route path="/:ws" element={signedIn ? <Console me={me.data!} at="Data" /> : <Navigate to="/login" replace />} />
+      <Route path="/:ws/new" element={
+        signedIn ? <Console me={me.data!} at="Data" adding /> : <Navigate to="/login" replace />} />
       <Route path="/:ws/s/:sourceId" element={
         signedIn ? <Console me={me.data!} at="Data" /> : <Navigate to="/login" replace />} />
       <Route path="/:ws/s/:sourceId/preview" element={
         signedIn ? <Console me={me.data!} at="Preview" /> : <Navigate to="/login" replace />} />
       <Route path="/:ws/s/:sourceId/schema" element={
         signedIn ? <Console me={me.data!} at="Schema" /> : <Navigate to="/login" replace />} />
+      <Route path="/:ws/j/:jobId" element={
+        signedIn ? <Console me={me.data!} at="Configure" /> : <Navigate to="/login" replace />} />
+      <Route path="/:ws/j/:jobId/train" element={
+        signedIn ? <Console me={me.data!} at="Train" /> : <Navigate to="/login" replace />} />
+      <Route path="/:ws/j/:jobId/results" element={
+        signedIn ? <Console me={me.data!} at="Results" /> : <Navigate to="/login" replace />} />
       <Route path="*" element={
         <Navigate to={signedIn ? (me.data!.workspace ? `/${me.data!.workspace.slug}` : "/welcome") : "/login"} replace />} />
     </Routes>
