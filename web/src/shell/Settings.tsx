@@ -361,10 +361,10 @@ export function Settings({ me, workspace, onClose }: { me: Me; workspace: Worksp
   };
 
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(6,9,8,0.72)", display: "flex",
+    <div className="settings-overlay" style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(6,9,8,0.72)", display: "flex",
                   alignItems: "center", justifyContent: "center", padding: 40 }}>
       <div style={{ position: "absolute", inset: 0 }} onClick={onClose} />
-      <div style={{ position: "relative", width: "100%", maxWidth: 940, height: 640, maxHeight: "100%", display: "flex",
+      <div className="settings-panel" style={{ position: "relative", width: "100%", maxWidth: 940, height: 640, maxHeight: "100%", display: "flex",
                     flexDirection: "column", border: "1px solid var(--edge)", borderRadius: 8, background: "#0F1413",
                     boxShadow: "0 30px 80px rgba(0,0,0,0.6)", overflow: "hidden" }}>
         <div style={{ padding: "22px 28px 18px", borderBottom: "1px solid var(--line)", display: "flex",
@@ -381,8 +381,8 @@ export function Settings({ me, workspace, onClose }: { me: Me; workspace: Worksp
                onClick={onClose}>×</div>
         </div>
 
-        <div style={{ display: "flex", alignItems: "stretch", minHeight: 0, flex: 1 }}>
-          <div style={{ width: 208, flex: "0 0 208px", borderRight: "1px solid var(--line)", background: "#0D1110",
+        <div className="settings-main" style={{ display: "flex", alignItems: "stretch", minHeight: 0, flex: 1 }}>
+          <div className="settings-tabs" style={{ width: 208, flex: "0 0 208px", borderRight: "1px solid var(--line)", background: "#0D1110",
                         padding: "14px 10px", display: "flex", flexDirection: "column", gap: 2 }}>
             {TABS.map((entry) => {
               const on = entry.id === tab;
@@ -398,7 +398,7 @@ export function Settings({ me, workspace, onClose }: { me: Me; workspace: Worksp
               );
             })}
           </div>
-          <div style={{ flex: 1, minWidth: 0, padding: "20px 28px 26px", overflowY: "auto" }}>{bodies[tab]}</div>
+          <div className="settings-content" style={{ flex: 1, minWidth: 0, padding: "20px 28px 26px", overflowY: "auto" }}>{bodies[tab]}</div>
         </div>
 
         <div style={{ borderTop: "1px solid var(--line)", background: "var(--panel)", padding: "16px 28px",

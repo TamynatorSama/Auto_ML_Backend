@@ -50,12 +50,12 @@ export function Preview({ ws, source, onSchema }: { ws: string; source: Source; 
   const profile = source.profile?.columns ?? {};
 
   return (
-    <div style={{ padding: "34px 40px 0", display: "flex", flexDirection: "column", height: "100%" }}>
+    <div className="preview-page" style={{ padding: "34px 40px 0", display: "flex", flexDirection: "column", height: "100%" }}>
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", justifyContent: "space-between",
                     gap: "16px 24px", marginBottom: 18, flex: "0 0 auto" }}>
         <div style={{ minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 5 }}>
-            <div style={{ fontSize: 27, letterSpacing: "-0.015em", color: "var(--bright)" }}>{source.name}</div>
+            <div className="responsive-title" style={{ fontSize: 27, letterSpacing: "-0.015em", color: "var(--bright)" }}>{source.name}</div>
             <div className="mono" style={{ fontSize: 11, color: "var(--accent)", border: "1px solid #1B3F36",
                                            borderRadius: 3, padding: "2px 6px" }}>csv</div>
           </div>
@@ -136,7 +136,7 @@ export function Preview({ ws, source, onSchema }: { ws: string; source: Source; 
         )}
       </div>
 
-      <div className="mono" style={{ flex: "0 0 auto", padding: "10px 0 14px", display: "flex", alignItems: "center",
+      <div className="mono preview-pager" style={{ flex: "0 0 auto", padding: "10px 0 14px", display: "flex", alignItems: "center",
                                      gap: 14, fontSize: 11.5, color: "var(--dim)" }}>
         <button className="pager" disabled={page <= 1 || rows.isFetching} onClick={() => setPage(page - 1)}>
           ← prev

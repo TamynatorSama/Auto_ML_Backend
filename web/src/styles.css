@@ -21,7 +21,7 @@
 
 * { box-sizing: border-box; }
 
-html, body, #root { height: 100%; }
+html, body, #root { height: 100%; min-width: 0; }
 
 body {
   margin: 0;
@@ -114,8 +114,12 @@ a:hover { color: #37d3ae; }
 
 /* ---- the console shell */
 
-.shell { display: flex; height: 100%; }
+.shell { display: flex; height: 100%; height: 100dvh; }
 .shell-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.shell-content { flex: 1; min-height: 0; min-width: 0; overflow-y: auto; overflow-x: hidden; }
+.responsive-title { min-width: 0; overflow-wrap: anywhere; }
+.rail-heading { display: flex; align-items: center; justify-content: space-between; }
+.rail-close, .navigation-trigger, .navigation-backdrop { display: none; }
 
 .rail {
   width: 292px;
@@ -172,10 +176,96 @@ a:hover { color: #37d3ae; }
 .btn.ghost:hover { border-color: #46524f; background: #18201e; }
 .btn:disabled, .btn.ghost:disabled { background: transparent; border: 1px solid var(--line); color: var(--faint); cursor: default; }
 
+@media (max-width: 1280px) {
+  .config-layout { grid-template-columns: minmax(0, 1fr) !important; }
+  .config-rail { position: static !important; }
+}
+
+@media (max-width: 1120px) {
+  .training-layout, .results-layout { grid-template-columns: minmax(0, 1fr) !important; }
+  .chosen-layout { grid-template-columns: minmax(0, 1fr) !important; }
+}
+
 @media (max-width: 860px) {
-  .shell { flex-direction: column; height: auto; min-height: 100%; }
-  .rail { width: 100%; flex: 0 0 auto; border-right: 0; border-bottom: 1px solid var(--line); }
-  .top { padding: 0 20px; overflow-x: auto; }
+  .rail {
+    position: fixed;
+    z-index: 51;
+    inset: 0 auto 0 0;
+    width: min(292px, calc(100vw - 44px));
+    height: 100dvh;
+    transform: translateX(-100%);
+    transition: transform 180ms ease;
+    box-shadow: 16px 0 40px rgba(0, 0, 0, 0.35);
+  }
+  .navigation-open .rail { transform: translateX(0); }
+  .navigation-backdrop {
+    display: block;
+    position: fixed;
+    z-index: 50;
+    inset: 0;
+    width: 100%;
+    border: 0;
+    background: rgba(0, 0, 0, 0.62);
+    cursor: pointer;
+  }
+  .rail-close, .navigation-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    flex: 0 0 36px;
+    border: 1px solid var(--edge);
+    border-radius: 4px;
+    background: var(--card);
+    color: var(--text);
+    font-size: 19px;
+    cursor: pointer;
+  }
+  .top { height: auto; min-height: 64px; padding: 10px 20px; flex-wrap: wrap; gap: 8px 12px; }
+  .top-steps { order: 3; flex: 1 0 100% !important; }
+  .top-action { margin-left: auto; min-width: 0; }
+  .top-action:empty { display: none !important; }
+  .page-body { padding: 26px 20px 64px !important; }
+  .preview-page { padding: 24px 20px 0 !important; }
+  .results-cards { grid-template-columns: minmax(0, 1fr) !important; }
+  .settings-overlay { padding: 16px !important; }
+  .settings-panel { height: min(740px, 100%) !important; }
+  .settings-main { flex-direction: column; }
+  .settings-tabs {
+    width: 100% !important;
+    flex: 0 0 auto !important;
+    flex-direction: row !important;
+    overflow-x: auto;
+    border-right: 0 !important;
+    border-bottom: 1px solid var(--line);
+  }
+  .settings-tabs .menu-item { flex: 0 0 auto; }
+  .settings-content { padding: 20px !important; }
+  .auth-outer { padding: 20px !important; }
+  .auth-intro { flex-basis: 100% !important; padding: 28px !important; gap: 18px !important; }
+  .auth-form-panel { flex-basis: 100% !important; padding: 28px !important; }
+}
+
+@media (max-width: 560px) {
+  .top { padding: 8px 14px; }
+  .page-body { padding: 22px 16px 56px !important; }
+  .preview-page { padding: 20px 16px 0 !important; }
+  .preview-pager { flex-wrap: wrap; }
+  .preview-pager > :last-child { margin-left: 0 !important; flex-basis: 100%; }
+  .script-layout { grid-template-columns: minmax(0, 1fr) !important; }
+  .srow { padding-left: 14px !important; padding-right: 14px !important; }
+  .crow { grid-template-columns: minmax(0, 1fr) !important; padding: 14px 16px !important; }
+  .settings-overlay { padding: 0 !important; }
+  .settings-panel { height: 100dvh !important; max-height: none !important; border-radius: 0 !important; }
+  .settings-content { padding: 16px !important; }
+  .auth-outer { padding: 0 !important; }
+  .auth-card { min-height: 100% !important; border: 0 !important; border-radius: 0 !important; }
+  .auth-intro { padding: 24px 20px !important; }
+  .auth-form-panel { padding: 28px 20px !important; }
+  .auth-steps { gap: 6px !important; }
+  .auth-steps > * { padding: 10px !important; min-height: 92px !important; }
+  .skel { max-width: 100%; }
 }
 
 /* the Preview table: sticky heads, one row per CSV row */

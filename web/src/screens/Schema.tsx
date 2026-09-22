@@ -90,7 +90,7 @@ function Diff({ changes }: { changes: ColumnChange[] }) {
 function SchemaSkeleton() {
   const rows = Array.from({ length: 9 }, (unused, index) => index);
   return (
-    <div style={{ padding: "40px 40px 84px", maxWidth: 1240 }}>
+    <div className="page-body" style={{ padding: "40px 40px 84px", maxWidth: 1240 }}>
       <div className="skel" style={{ width: 160, height: 28, marginBottom: 12 }} />
       <div className="skel" style={{ width: 540, height: 14, marginBottom: 7 }} />
       <div className="skel" style={{ width: 480, height: 14, marginBottom: 26 }} />
@@ -192,7 +192,7 @@ export function Schema({ ws, source }: { ws: string; source: Source }) {
       named.includes(column.name) ? { ...column, available_at_prediction: value } : column));
 
   return (
-    <div style={{ padding: "40px 40px 84px", maxWidth: 1240 }}>
+    <div className="page-body" style={{ padding: "40px 40px 84px", maxWidth: 1240 }}>
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", justifyContent: "space-between",
                     gap: "16px 24px", marginBottom: 22 }}>
         <div>

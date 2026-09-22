@@ -120,13 +120,14 @@ function Sources({ sources }: { sources: Source[] }) {
   );
 }
 
-export function Sidebar({ me, workspace, sources = [], steps, onSettings, onAddSource }: {
+export function Sidebar({ me, workspace, sources = [], steps, onSettings, onAddSource, onClose }: {
   me: Me;
   workspace: Workspace;
   sources?: Source[];
   steps: Step[];
   onSettings: () => void;
   onAddSource?: () => void;
+  onClose?: () => void;
 }) {
   const [menu, setMenu] = useState(false);
   const [leaving, setLeaving] = useState(false);
@@ -145,9 +146,10 @@ export function Sidebar({ me, workspace, sources = [], steps, onSettings, onAddS
   };
 
   return (
-    <div className="rail">
-      <div style={{ padding: "20px 20px 18px", borderBottom: "1px solid var(--line)" }}>
+    <div className="rail" id="workspace-navigation">
+      <div className="rail-heading" style={{ padding: "20px 20px 18px", borderBottom: "1px solid var(--line)" }}>
         <Logo />
+        <button className="rail-close" aria-label="Close navigation" onClick={onClose}>×</button>
       </div>
 
       <div style={{ flex: 1, padding: "14px 0 20px", overflowY: "auto" }}>

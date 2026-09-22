@@ -40,14 +40,14 @@ export function AuthShell({ panelTitle, panelSub, step = 1, title, sub, fine, ch
   children: ReactNode;
 }) {
   return (
-    <div style={{ height: "100%", background: "var(--bg-deep)", display: "flex", justifyContent: "center",
+    <div className="auth-outer" style={{ height: "100%", background: "var(--bg-deep)", display: "flex", justifyContent: "center",
                   padding: "40px 32px", overflowY: "auto" }}>
       {/* a floor, not a fixed height: log in, forgot, reset, verify and welcome all sit at it */}
-      <div style={{ width: "100%", maxWidth: 1140, minHeight: "min(600px, 100%)", margin: "auto", display: "flex",
+      <div className="auth-card" style={{ width: "100%", maxWidth: 1140, minHeight: "min(600px, 100%)", margin: "auto", display: "flex",
                     flexWrap: "wrap", border: "1px solid var(--line-soft)", borderRadius: 10, background: "var(--bg)",
                     boxShadow: "0 40px 90px rgba(0,0,0,0.55)", overflow: "hidden" }}>
 
-        <div style={{ flex: "1 1 420px", minWidth: 0, padding: "44px 44px 40px", display: "flex",
+        <div className="auth-intro" style={{ flex: "1 1 420px", minWidth: 0, padding: "44px 44px 40px", display: "flex",
                       flexDirection: "column", gap: 26, background: "var(--panel)", borderRight: "1px solid var(--line-soft)",
                       backgroundImage: "repeating-linear-gradient(to right, rgba(255,255,255,0.022) 0 1px, transparent 1px 44px), " +
                                        "repeating-linear-gradient(to bottom, rgba(255,255,255,0.022) 0 1px, transparent 1px 44px)" }}>
@@ -58,7 +58,7 @@ export function AuthShell({ panelTitle, panelSub, step = 1, title, sub, fine, ch
             </div>
             <div style={{ fontSize: 14.5, lineHeight: 1.6, color: "var(--muted)" }}>{panelSub}</div>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 }}>
+          <div className="auth-steps" style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 }}>
             {STEPS.map((label, index) => {
               const on = index + 1 === step;
               return (
@@ -78,7 +78,7 @@ export function AuthShell({ panelTitle, panelSub, step = 1, title, sub, fine, ch
           </div>
         </div>
 
-        <div style={{ flex: "1 1 420px", minWidth: 0, display: "flex", flexDirection: "column",
+        <div className="auth-form-panel" style={{ flex: "1 1 420px", minWidth: 0, display: "flex", flexDirection: "column",
                       padding: "44px 48px 26px" }}>
           <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center",
                         overflowY: "auto" }}>
@@ -196,12 +196,12 @@ export function ConsoleSkeleton() {
 /** The sign-in card's shape, for the moment before /api/me answers on a public screen. */
 export function AuthSkeleton() {
   return (
-    <div style={{ height: "100%", background: "var(--bg-deep)", display: "flex", justifyContent: "center",
+    <div className="auth-outer" style={{ height: "100%", background: "var(--bg-deep)", display: "flex", justifyContent: "center",
                   padding: "40px 32px" }}>
-      <div style={{ width: "100%", maxWidth: 1140, minHeight: "min(600px, 100%)", margin: "auto", display: "flex",
+      <div className="auth-card" style={{ width: "100%", maxWidth: 1140, minHeight: "min(600px, 100%)", margin: "auto", display: "flex",
                     flexWrap: "wrap", border: "1px solid var(--line-soft)", borderRadius: 10,
                     background: "var(--bg)", overflow: "hidden" }}>
-        <div style={{ flex: "1 1 420px", minWidth: 0, padding: "44px", background: "var(--panel)",
+        <div className="auth-intro" style={{ flex: "1 1 420px", minWidth: 0, padding: "44px", background: "var(--panel)",
                       borderRight: "1px solid var(--line-soft)", display: "flex", flexDirection: "column",
                       gap: 26 }}>
           <Logo size={30} />
@@ -210,11 +210,11 @@ export function AuthSkeleton() {
             <div className="skel" style={{ width: "95%", height: 14 }} />
             <div className="skel" style={{ width: "70%", height: 14 }} />
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 }}>
+          <div className="auth-steps" style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12 }}>
             {[0, 1, 2].map((tile) => <div className="skel" key={tile} style={{ height: 108 }} />)}
           </div>
         </div>
-        <div style={{ flex: "1 1 420px", minWidth: 0, display: "flex", alignItems: "center",
+        <div className="auth-form-panel" style={{ flex: "1 1 420px", minWidth: 0, display: "flex", alignItems: "center",
                       justifyContent: "center", padding: "44px 48px" }}>
           <div style={{ width: "100%", maxWidth: 400, display: "flex", flexDirection: "column", gap: 14 }}>
             <div className="skel" style={{ width: "60%", height: 22, margin: "0 auto 10px" }} />

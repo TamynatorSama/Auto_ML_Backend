@@ -30,7 +30,7 @@ const STATUS_NOTE: Record<string, string> = {
 
 function Card({ title, meta, children }: { title: string; meta?: ReactNode; children: ReactNode }) {
   return (
-    <div style={{ border: "1px solid var(--line)", borderRadius: 6, background: "var(--card)",
+    <div className="chosen-layout" style={{ border: "1px solid var(--line)", borderRadius: 6, background: "var(--card)",
                   overflow: "hidden", display: "flex", flexDirection: "column", minWidth: 0 }}>
       <div className="chead">
         <div className="label" style={{ color: "var(--muted)" }}>{title}</div>
@@ -529,12 +529,12 @@ export function Results({ ws, job, onTraining }: { ws: string; job: Job; onTrain
   ].filter(Boolean).join(" · ");
 
   return (
-    <div style={{ padding: "32px 40px 84px", maxWidth: 1340 }}>
+    <div className="page-body" style={{ padding: "32px 40px 84px", maxWidth: 1340 }}>
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 24,
                     flexWrap: "wrap", marginBottom: 18 }}>
         <div style={{ minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 7 }}>
-            <div style={{ fontSize: 23, letterSpacing: "-0.015em", color: "var(--bright)" }}>
+            <div className="responsive-title" style={{ fontSize: 23, letterSpacing: "-0.015em", color: "var(--bright)" }}>
               {job.name} · results
             </div>
             <div className="mono" style={{ fontSize: 10.5, letterSpacing: "0.06em", borderRadius: 3,
@@ -566,7 +566,7 @@ export function Results({ ws, job, onTraining }: { ws: string; job: Job; onTrain
 
       <Chosen report={report} selected={selected} primary={primary} />
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.15fr) minmax(0, 1fr)", gap: 16,
+      <div className="results-layout" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.15fr) minmax(0, 1fr)", gap: 16,
                     alignItems: "stretch", marginBottom: 16 }}>
         <Card title="Model comparison"
               meta={<div className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>
@@ -584,7 +584,7 @@ export function Results({ ws, job, onTraining }: { ws: string; job: Job; onTrain
         </Card>
       </div>
 
-      <div style={{ display: "grid", gap: 16, alignItems: "stretch", marginBottom: 16,
+      <div className="results-cards" style={{ display: "grid", gap: 16, alignItems: "stretch", marginBottom: 16,
                     gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))" }}>
         <Card title="Where the gain came from"
               meta={<div className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>

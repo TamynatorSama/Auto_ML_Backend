@@ -156,7 +156,7 @@ export function Data({ ws, source, job, first, onPreview, onPick, onSchema, onJo
 
   if (!source) {
     return (
-      <div style={{ padding: "48px 40px 84px", maxWidth: 1100 }}>
+      <div className="page-body" style={{ padding: "48px 40px 84px", maxWidth: 1100 }}>
         <div style={{ maxWidth: 560, marginBottom: 30 }}>
           <div className="label" style={{ color: "var(--faint)", marginBottom: 12 }}>Step 1 · data source</div>
           <div style={{ fontSize: 27, letterSpacing: "-0.015em", color: "var(--bright)", marginBottom: 12 }}>
@@ -179,13 +179,13 @@ export function Data({ ws, source, job, first, onPreview, onPick, onSchema, onJo
   const expired = source.status === "expired";
 
   return (
-    <div style={{ padding: "40px 40px 84px", maxWidth: 1100 }}>
+    <div className="page-body" style={{ padding: "40px 40px 84px", maxWidth: 1100 }}>
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", justifyContent: "space-between",
                     gap: "16px 24px", marginBottom: 28 }}>
         <div style={{ minWidth: 0 }}>
           <div className="label" style={{ color: "var(--faint)", marginBottom: 9 }}>Active data source</div>
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 7 }}>
-            <div className="mono" style={{ fontSize: 26, letterSpacing: "-0.01em", color: "var(--bright)" }}>
+            <div className="mono responsive-title" style={{ fontSize: 26, letterSpacing: "-0.01em", color: "var(--bright)" }}>
               {source.name}
             </div>
             <div className="mono" style={{ fontSize: 11, color: "var(--accent)", border: "1px solid #1B3F36",

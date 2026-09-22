@@ -1,4 +1,5 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { useLocation } from "react-router-dom";
 
 import type { Me, Workspace } from "../api";
 import { Settings } from "./Settings";
@@ -23,13 +24,28 @@ export function Shell({ me, workspace, sources, steps, at, reached, onStep, acti
   children: ReactNode;
 }) {
   const [settings, setSettings] = useState(false);
+  const [navigationOpen, setNavigationOpen] = useState(false);
+  const { pathname } = useLocation();
+  useEffect(() => setNavigationOpen(false), [pathname]);
+  useEffect(() => {
+    if (!navigationOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setNavigationOpen(false);
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [navigationOpen]);
   return (
-    <div className="shell">
+    <div className={`shell${navigationOpen ? " navigation-open" : ""}`}>
+      {navigationOpen && <button className="navigation-backdrop" aria-label="Close navigation"
+                                 onClick={() => setNavigationOpen(false)} />}
       <Sidebar me={me} workspace={workspace} sources={sources} steps={steps}
-               onSettings={() => setSettings(true)} onAddSource={onAddSource} />
+               onSettings={() => { setNavigationOpen(false); setSettings(true); }}
+               onAddSource={onAddSource} onClose={() => setNavigationOpen(false)} />
       <div className="shell-main">
-        <TopBar at={at} reached={reached} onStep={onStep} action={action} />
-        <div style={{ flex: 1, overflowY: "auto" }}>{children}</div>
+        <TopBar at={at} reached={reached} onStep={onStep} action={action}
+                onNavigation={() => setNavigationOpen(true)} navigationOpen={navigationOpen} />
+        <div className="shell-content">{children}</div>
       </div>
       {settings && <Settings me={me} workspace={workspace} onClose={() => setSettings(false)} />}
     </div>

@@ -280,8 +280,8 @@ function PlannedWork({ config }: { config: Configs }) {
 function Skeleton({ note }: { note?: string }) {
   const rows = (count: number) => Array.from({ length: count }, (unused, index) => index);
   return (
-    <div style={{ padding: "36px 40px 84px", maxWidth: RAIL + 800 }}>
-      <div style={{ display: "grid", gridTemplateColumns: `minmax(0, 1fr) ${RAIL}px`, gap: 22,
+    <div className="page-body" style={{ padding: "36px 40px 84px", maxWidth: RAIL + 800 }}>
+      <div className="config-layout" style={{ display: "grid", gridTemplateColumns: `minmax(0, 1fr) ${RAIL}px`, gap: 22,
                     alignItems: "start" }}>
         <div>
           <div className="skel" style={{ width: 260, height: 27, marginBottom: 12 }} />
@@ -409,8 +409,8 @@ export function Config({ ws, jobId, onBack, onGone, onStarted }: {
               + Object.keys(changed(plan.config, config)).length;
 
   return (
-    <div style={{ padding: "36px 40px 84px", maxWidth: RAIL + 800 }}>
-      <div style={{ display: "grid", gridTemplateColumns: `minmax(0, 1fr) ${RAIL}px`, gap: 22,
+    <div className="page-body" style={{ padding: "36px 40px 84px", maxWidth: RAIL + 800 }}>
+      <div className="config-layout" style={{ display: "grid", gridTemplateColumns: `minmax(0, 1fr) ${RAIL}px`, gap: 22,
                     alignItems: "start" }}>
         <div>
       <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginBottom: 10 }}>
@@ -541,7 +541,7 @@ export function Config({ ws, jobId, onBack, onGone, onStarted }: {
           </Section>
         </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 16, position: "sticky", top: 0 }}>
+        <div className="config-rail" style={{ display: "flex", flexDirection: "column", gap: 16, position: "sticky", top: 0 }}>
           <PlannedWork config={config} />
 
           <Card>

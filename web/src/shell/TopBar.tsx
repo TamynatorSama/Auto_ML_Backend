@@ -4,15 +4,19 @@ import type { ReactNode } from "react";
 export const STEPS = ["Data", "Preview", "Schema", "Configure", "Train", "Results"] as const;
 export type StepName = (typeof STEPS)[number];
 
-export function TopBar({ at, reached = [], onStep, action }: {
+export function TopBar({ at, reached = [], onStep, action, onNavigation, navigationOpen = false }: {
   at: StepName;
   reached?: StepName[];
   onStep?: (step: StepName) => void;
   action?: ReactNode;
+  onNavigation?: () => void;
+  navigationOpen?: boolean;
 }) {
   return (
     <div className="top">
-      <div style={{ display: "flex", alignItems: "center", gap: 3, minWidth: 0, flex: "1 1 auto",
+      <button className="navigation-trigger" aria-label="Open navigation" aria-expanded={navigationOpen}
+              aria-controls="workspace-navigation" onClick={onNavigation}>☰</button>
+      <div className="top-steps" style={{ display: "flex", alignItems: "center", gap: 3, minWidth: 0, flex: "1 1 auto",
                     overflowX: "auto" }}>
         {STEPS.map((label, index) => {
           const here = label === at;
@@ -32,7 +36,7 @@ export function TopBar({ at, reached = [], onStep, action }: {
           );
         })}
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 14, flex: "0 0 auto" }}>{action}</div>
+      <div className="top-action" style={{ display: "flex", alignItems: "center", gap: 14, flex: "0 0 auto" }}>{action}</div>
     </div>
   );
 }

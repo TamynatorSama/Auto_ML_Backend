@@ -112,13 +112,13 @@ function Timeline({ models, metric, tries, best }: {
   models: JobModel[]; metric: string; tries: number; best: (row: JobModel) => number | undefined;
 }) {
   return (
-    <div style={{ padding: "6px 0" }}>
+    <div style={{ padding: "6px 0", overflowX: "auto" }}>
       {models.map((row) => {
         const done = row.status === "running" ? Math.max((row.generation ?? 1) - 1, 0)
           : row.status === "waiting" ? 0 : tries;
         const score = best(row);
         return (
-          <div key={row.model} style={{ display: "grid", alignItems: "center", gap: 14,
+          <div key={row.model} style={{ display: "grid", alignItems: "center", gap: 14, minWidth: 460,
                                         gridTemplateColumns: "76px minmax(110px, 1.2fr) minmax(90px, 1.6fr) 104px",
                                         padding: "11px 22px", borderBottom: "1px solid var(--line-soft)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
@@ -504,7 +504,7 @@ function PipelineCode({ ws, job, pick, attempts, onPick }: {
               </a>
             </div>
           }>
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(190px, 250px) minmax(0, 1fr)" }}>
+      <div className="script-layout" style={{ display: "grid", gridTemplateColumns: "minmax(190px, 250px) minmax(0, 1fr)" }}>
         <div style={{ borderRight: "1px solid var(--line)", height: 320, overflowY: "auto",
                       overflowX: "hidden" }}>
           {mine.map((attempt) => {
@@ -713,13 +713,13 @@ export function Training({ ws, job, onResults }: { ws: string; job: Job; onResul
   ];
 
   return (
-    <div style={{ padding: "32px 40px 84px", maxWidth: 1340 }}>
+    <div className="page-body" style={{ padding: "32px 40px 84px", maxWidth: 1340 }}>
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 24,
                     flexWrap: "wrap", marginBottom: 20 }}>
         <div style={{ minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 7 }}>
             {running && <div className="pulse" />}
-            <div style={{ fontSize: 23, letterSpacing: "-0.015em", color: "var(--bright)" }}>{job.name}</div>
+            <div className="responsive-title" style={{ fontSize: 23, letterSpacing: "-0.015em", color: "var(--bright)" }}>{job.name}</div>
             <div className="mono" style={{ fontSize: 10.5, letterSpacing: "0.06em", borderRadius: 3,
                                            padding: "3px 8px", border: "1px solid var(--edge)",
                                            color: running ? "var(--accent-bright)" : "var(--dim)" }}>
@@ -773,7 +773,7 @@ export function Training({ ws, job, onResults }: { ws: string; job: Job; onResul
         </Card>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 380px", gap: 16,
+      <div className="training-layout" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 380px", gap: 16,
                     alignItems: "stretch", marginBottom: 16 }}>
         <Card title="Live leaderboard"
               meta={<div className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>
@@ -792,7 +792,7 @@ export function Training({ ws, job, onResults }: { ws: string; job: Job; onResul
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 380px", gap: 16,
+      <div className="training-layout" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 380px", gap: 16,
                     alignItems: "stretch", marginBottom: 16 }}>
         <Card title="Run log"
               meta={<button className="pager" onClick={() => setQuiet(!quiet)}>
