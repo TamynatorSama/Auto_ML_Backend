@@ -607,6 +607,10 @@ export function Config({ ws, jobId, onBack, onGone, onStarted }: {
                 Keep it
               </button>
             )}
+            {/* also beside the button: the banner at the top of the page is off-screen from here */}
+            {drop.error && (
+              <div className="note" style={{ marginTop: 8 }}>{(drop.error as Error).message}</div>
+            )}
           </div>
         </div>
       </div>

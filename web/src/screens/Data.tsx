@@ -151,6 +151,8 @@ export function Data({ ws, source, job, first, onPreview, onPick, onSchema, onJo
   const queries = useQueryClient();
   const remove = useMutation({
     mutationFn: (id: number) => deleteSource(ws, id),
+    // the refusal is the useful part: a dataset with runs says to delete those first,
+    // and saying nothing reads as the button being broken
     onSuccess: () => { queries.invalidateQueries({ queryKey: ["sources", ws] }); onPick(null); },
   });
 
@@ -206,6 +208,10 @@ export function Data({ ws, source, job, first, onPreview, onPick, onSchema, onJo
           </button>
         </div>
       </div>
+
+      {remove.error && (
+        <div className="note" style={{ marginBottom: 14 }}>{(remove.error as Error).message}</div>
+      )}
 
       {working && (
         <div style={{ ...card, background: "var(--panel)", padding: "16px 20px", marginBottom: 14,
