@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { api, useLinkToken, type Me } from "../api";
-import { AuthShell, Divider, Field, Note, Providers } from "../ui";
+import { AuthShell, Field, Note, Providers } from "../ui";
 
 /** After signing in: the workspace, or Welcome to pick a slug. */
 function useLandAfterSignIn() {
@@ -97,7 +97,6 @@ export function SignUp() {
                sub="Your workspace holds your sources, schemas and job history. The beta is invitation only."
                fine="Only invited addresses can sign up while the beta runs.">
       <Providers />
-      <Divider text="or" />
       <form style={form} onSubmit={submit}>
         <Field label="Full name">
           <input className="input" value={name} placeholder="Rhea Kapoor" autoComplete="name"
@@ -139,10 +138,9 @@ export function LogIn() {
   return (
     <AuthShell panelTitle="Pick up where the last run left off"
                panelSub="Jobs keep running while you are away, and every schema revision stays diffable."
-               title="Log in to AutoML" sub="Use your email, or the provider you signed up with."
-               fine="Google and GitHub sign you in with the address on your account.">
+               title="Log in to AutoML" sub="Use the email address on your account."
+               fine="Only invited addresses can create an account during the beta.">
       <Providers />
-      <Divider text="or" />
       <form style={form} onSubmit={submit}>
         <Field label="Work email">
           <input className="input" type="email" value={email} placeholder="rhea@acme.com" autoComplete="email"

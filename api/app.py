@@ -33,6 +33,12 @@ def create_app(pool=None) -> FastAPI:
 
     app = FastAPI(title="automl", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
+    @app.get("/api/health")
+    def health():
+        with app.state.pool.connection() as conn:
+            conn.execute("SELECT 1")
+        return {"status": "ok"}
+
     @app.middleware("http")
     async def same_origin(request: Request, call_next):
         # on top of SameSite=Lax: anything that changes something must come from the web app itself

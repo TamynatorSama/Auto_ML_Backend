@@ -33,6 +33,7 @@ writes a per-job usage row every few seconds only for the next tick to overwrite
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import Depends, HTTPException
@@ -49,7 +50,7 @@ PROVIDER = "gemini"   # the provider a run needs a key for today (A2)
 EVENT_PAGE = 300
 # already summed in the usage panel, and 50 of them in a short run: they would bury the log
 LEDGER_KINDS = ("llm_usage", "sandbox_usage")
-RUNS_ROOT = Path("runs")
+RUNS_ROOT = Path(os.environ.get("AUTOML_RUNS_ROOT") or "runs")
 
 
 class JobIn(BaseModel):

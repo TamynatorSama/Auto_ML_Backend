@@ -1,0 +1,22 @@
+http://:8080 {
+    bind 127.0.0.1
+    root * /srv
+    encode zstd gzip
+
+    @api path /api /api/*
+    handle @api {
+        reverse_proxy 127.0.0.1:8000
+    }
+
+    handle {
+        try_files {path} /index.html
+        file_server
+    }
+
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy no-referrer
+        Strict-Transport-Security "max-age=31536000"
+    }
+}

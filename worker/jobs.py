@@ -21,6 +21,7 @@ that was requeued carries on under the cap it had already been spending against
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -34,7 +35,7 @@ from models import DataSchema
 from utils.reusable import hooks
 from worker import sources
 
-RUNS_ROOT = Path("runs")
+RUNS_ROOT = Path(os.environ.get("AUTOML_RUNS_ROOT") or "runs")
 BACKEND = "sandbox"   # tests switch it to subprocess
 # the report's status -> the job's
 FINAL_STATUS = {"complete": "succeeded", "stopped": "stopped"}

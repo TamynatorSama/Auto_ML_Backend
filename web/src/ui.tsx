@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
 
 /**
  * The AutoML mark: public/automl-mark.png from the design canvas when it's there,
@@ -135,11 +136,23 @@ export function Divider({ text }: { text: string }) {
   );
 }
 
-/** Google and GitHub: a plain link each, since the browser must leave the app for the provider. */
+/** Show only sign-in providers configured on the API. */
 export function Providers() {
+  const { data } = useQuery({
+    queryKey: ["oauth-providers"],
+    queryFn: async () => {
+      const response = await fetch("/api/auth/oauth/providers");
+      if (!response.ok) throw new Error("Could not load sign-in providers");
+      return (await response.json() as { providers: string[] }).providers;
+    },
+    retry: false,
+  });
+  const enabled = [["google", "Google"], ["github", "GitHub"]].filter(([id]) => data?.includes(id));
+  if (!enabled.length) return null;
   return (
+    <>
     <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
-      {[["google", "Google"], ["github", "GitHub"]].map(([id, label]) => (
+      {enabled.map(([id, label]) => (
         <a key={id} className="quiet" href={`/api/auth/oauth/${id}`}
            style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 9, color: "#c8d2ce" }}>
           <img src={`/${id}-mark.svg`} alt="" width={16} height={16} style={{ display: "block", flex: "0 0 16px" }} />
@@ -147,6 +160,8 @@ export function Providers() {
         </a>
       ))}
     </div>
+    <Divider text="or" />
+    </>
   );
 }
 

@@ -42,6 +42,11 @@ for _name, _settings in PROVIDERS.items():
                        client_secret=os.environ.get(f"{_name.upper()}_OAUTH_CLIENT_SECRET"), **_settings)
 
 
+@router.get("/providers")
+def enabled_providers():
+    return {"providers": [name for name in PROVIDERS if oauth.create_client(name) is not None]}
+
+
 class Refused(Exception):
     """Sign-in didn't happen; the message is for the log-in screen."""
 

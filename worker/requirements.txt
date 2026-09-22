@@ -3,3 +3,6 @@ psycopg[binary]==3.3.6
 psycopg-pool==3.3.2
 langgraph-checkpoint-postgres==3.1.2
 cryptography>=42
+langchain-google-genai==4.3.7
+psutil==7.2.2
+scikit-learn==1.9.1
