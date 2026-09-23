@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 
@@ -90,6 +91,14 @@ def plan(pool, saver, task: dict) -> None:
     graph, config = main.graph.compile(checkpointer=saver), thread(job_id)
     snapshot = graph.get_state(config)
     if not snapshot.values:
+        # A restored or recreated database can reuse a numeric job id while the
+        # persistent runs volume still has files from the old database. Those
+        # files are valid resume artifacts, so the model fan-out would otherwise
+        # accept them as this new job's results. An empty checkpoint means this
+        # is a fresh plan; give it a fresh directory too.
+        root, fresh = RUNS_ROOT.resolve(), run_dir.resolve()
+        if fresh.is_relative_to(root) and fresh != root:
+            shutil.rmtree(fresh, ignore_errors=True)
         graph.invoke({
             "topic": job["name"], "data_path": job["data_path"], "schema": DataSchema.model_validate(job["schema"]),
             "run_id": job_id, "run_dir": str(run_dir), "review": True, "backend": BACKEND,

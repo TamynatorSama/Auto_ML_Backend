@@ -161,9 +161,12 @@ function Leaderboard({ rows, metric, ranked, onPick }: {
 }) {
   const grid = "30px minmax(120px, 1.5fr) 48px minmax(74px, 1fr) 72px";
   return (
-    <div style={{ overflowX: "auto" }}>
+    <div style={{ maxHeight: "min(420px, 60vh)", overflow: "auto",
+                  overscrollBehavior: "contain", scrollbarGutter: "stable" }}>
       <div style={{ minWidth: 420 }}>
-        <div className="srow head" style={{ gridTemplateColumns: grid, minWidth: 0, padding: "10px 22px" }}>
+        <div className="srow head" style={{ gridTemplateColumns: grid, minWidth: 0, padding: "10px 22px",
+                                             position: "sticky", top: 0, zIndex: 1,
+                                             background: "var(--card)" }}>
           <div>{ranked ? "#" : ""}</div><div>attempt</div><div>gen</div>
           <div style={{ textAlign: "right" }}>{metric || "score"}</div>
           <div style={{ textAlign: "right" }}>time</div>
@@ -592,7 +595,8 @@ export function Training({ ws, job, onResults }: { ws: string; job: Job; onResul
   const [problem, setProblem] = useState("");
   const [quiet, setQuiet] = useState(true);
   const [now, setNow] = useState(() => Date.now());
-  const bottom = useRef<HTMLDivElement>(null);
+  const logBox = useRef<HTMLDivElement>(null);
+  const followLog = useRef(true);
 
   // the job comes from useJob, which polls while the worker may still be moving it;
   // /live is for the usage, the models, the attempts and the events. An earlier cut
@@ -609,7 +613,13 @@ export function Training({ ws, job, onResults }: { ws: string; job: Job; onResul
     if (page.cursor > cursor) setCursor(page.cursor);
   }, [live.data?.cursor, live.data?.events.length]);
 
-  useEffect(() => { bottom.current?.scrollIntoView({ block: "nearest" }); }, [log.length]);
+  // Keep a live log pinned only inside its own scroller. scrollIntoView also
+  // scrolls ancestors, which used to pull the whole training page down whenever
+  // a new event arrived.
+  useEffect(() => {
+    const box = logBox.current;
+    if (box && followLog.current) box.scrollTop = box.scrollHeight;
+  }, [log.length, quiet]);
   // the rail and the step bar read the listing, which has no poll of its own
   useEffect(() => { queries.invalidateQueries({ queryKey: ["jobs", ws] }); }, [job.status]);
   useEffect(() => {
@@ -681,10 +691,24 @@ export function Training({ ws, job, onResults }: { ws: string; job: Job; onResul
     }));
   }, [attempts, metric, direction, higher, config?.models]);
 
-  const bestOf = (row: JobModel) => row.best_cv?.[metric];
+  // job_models gets its best_cv summary when a model finishes. The attempts
+  // table is live, so use it for the timeline as well as the leaderboard; this
+  // keeps a running model's score visible as soon as its attempt completes.
+  const liveBest = useMemo(() => {
+    const best = new Map<string, number>();
+    if (!direction) return best;
+    for (const attempt of attempts) {
+      const score = attempt.cv_scores?.[metric];
+      if (typeof score !== "number" || Number.isNaN(score)) continue;
+      const seen = best.get(attempt.model);
+      if (seen === undefined || (higher ? score > seen : score < seen)) best.set(attempt.model, score);
+    }
+    return best;
+  }, [attempts, metric, direction, higher]);
+  const bestOf = (row: JobModel) => liveBest.get(row.model) ?? row.best_cv?.[metric];
   const leader = direction ? ranked.find((row) => row.score !== undefined) : undefined;
   const failures = attempts.filter((attempt) => attempt.status !== "ok").length;
-  const generations = attempts.filter((attempt) => attempt.kind !== "repair").length;
+  const generations = attempts.filter((attempt) => attempt.kind !== "repair" && attempt.kind !== "ablation").length;
   // a finished run's clock stops at finished_at; only a live one counts up to now
   const until = job.finished_at ? new Date(job.finished_at).getTime() : now;
   const elapsed = job.started_at ? (until - new Date(job.started_at).getTime()) / 1000 : 0;
@@ -701,8 +725,9 @@ export function Training({ ws, job, onResults }: { ws: string; job: Job; onResul
       sub: !direction ? "this plan predates the metric's direction"
         : leader ? `${leader.model} · attempt ${leader.attempt}` : "nothing scored yet",
       fg: "var(--accent-bright)" },
-    { k: "attempts", v: planned ? `${generations} / ${planned}` : String(generations),
-      sub: `${page?.usage.running ?? 0} model${(page?.usage.running ?? 0) === 1 ? "" : "s"} going · ${
+    { k: "attempts", v: String(attempts.length),
+      sub: `${generations}${planned ? ` / ${planned}` : ""} generation slots · ${
+        page?.usage.running ?? 0} model${(page?.usage.running ?? 0) === 1 ? "" : "s"} going · ${
         waiting.length} waiting` },
     { k: "elapsed", v: job.started_at ? clock(elapsed) : "—",
       sub: job.deadline_seconds ? `cap ${clock(job.deadline_seconds)}` : "no time cap" },
@@ -798,7 +823,11 @@ export function Training({ ws, job, onResults }: { ws: string; job: Job; onResul
               meta={<button className="pager" onClick={() => setQuiet(!quiet)}>
                 {quiet ? "all levels" : "fewer"}
               </button>}>
-          <div style={{ maxHeight: 300, overflowY: "auto", padding: "10px 22px" }}>
+          <div ref={logBox} onScroll={(event) => {
+                 const box = event.currentTarget;
+                 followLog.current = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+               }}
+               style={{ maxHeight: 300, overflowY: "auto", padding: "10px 22px" }}>
             {shown.length ? shown.map((event) => {
               const level = LEVEL[event.kind] ?? "info";
               return (
@@ -816,7 +845,6 @@ export function Training({ ws, job, onResults }: { ws: string; job: Job; onResul
                 </div>
               );
             }) : <div style={{ padding: "16px 0", color: "var(--faint)", fontSize: 13 }}>Nothing yet.</div>}
-            <div ref={bottom} />
           </div>
         </Card>
 

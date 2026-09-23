@@ -11,5 +11,6 @@ __pycache__/
 runs/
 uploads/
 *.md
+!LIVE_OPERATIONS.md
 docs/
 /tests/

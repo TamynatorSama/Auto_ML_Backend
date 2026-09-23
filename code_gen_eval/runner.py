@@ -248,7 +248,11 @@ def _sandbox_execute(
             client.put_files(sandbox, files)
             exec_id = client.start_exec(sandbox, command, deadline)
             status, stdout, stderr, died_after_error = _follow(client, sandbox, exec_id)
-            if status["state"] == "exited":
+            # A normal exec exit leaves the long-lived sandbox container up, so
+            # its result files can be copied out. A cgroup OOM kills the whole
+            # container instead; asking the host for files then raises a 409 and
+            # masks the useful out_of_memory result with an infrastructure error.
+            if status["state"] == "exited" and not status.get("oom_killed"):
                 client.download(sandbox, out_dir)
         except BaseException:
             try:
